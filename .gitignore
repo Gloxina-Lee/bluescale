@@ -1,0 +1,9 @@
+data/
+bluescale.exe
+bluescale
+frontend/node_modules/
+frontend/.vite/
+frontend/.npm-cache/
+.npm-cache/
+.gocache/
+.gomodcache/
