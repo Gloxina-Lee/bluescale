@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { uploadWithProgress } from '../api'
+import { hasPermission } from '../session'
 
 const router = useRouter()
 const input = ref(null)
@@ -154,7 +155,7 @@ onBeforeUnmount(clearItems)
     <p v-if="error" class="inline-message error" role="alert">{{ error }}</p>
     <div v-if="successCount" class="inline-message success">
       <span>✓</span> 已成功上传 {{ successCount }} 张图片
-      <RouterLink to="/images">前往图片管理</RouterLink>
+      <RouterLink v-if="hasPermission('manageImages')" to="/images">前往图片管理</RouterLink>
     </div>
   </section>
 </template>

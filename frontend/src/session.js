@@ -6,6 +6,17 @@ export const session = reactive({
   user: null,
 })
 
+export function hasPermission(permission, user = session.user) {
+  return Boolean(user?.permissions?.[permission])
+}
+
+export function defaultRouteName(user = session.user) {
+  if (hasPermission('upload', user)) return 'upload'
+  if (hasPermission('manageImages', user)) return 'images'
+  if (hasPermission('manageUsers', user)) return 'users'
+  return 'login'
+}
+
 export async function loadStatus() {
   const status = await api('/api/status')
   session.configured = status.configured
@@ -29,4 +40,3 @@ export async function signOut() {
     session.user = null
   }
 }
-

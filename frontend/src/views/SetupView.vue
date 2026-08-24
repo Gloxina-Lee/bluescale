@@ -44,7 +44,7 @@ async function submit() {
 </script>
 
 <template>
-  <AuthLayout eyebrow="首次运行" title="欢迎，先完成初始化" description="创建唯一的管理员账号，并准备好本地图片存储。全部数据都保留在你的设备上。">
+  <AuthLayout eyebrow="首次运行" title="欢迎，先完成初始化" description="创建初始管理员账号，并准备好本地图片存储。之后可继续添加用户与用户组。">
     <form class="auth-form" @submit.prevent="submit">
       <div class="form-heading">
         <span class="step-pill">01 / 01</span>
@@ -88,4 +88,3 @@ async function submit() {
     </form>
   </AuthLayout>
 </template>
-
