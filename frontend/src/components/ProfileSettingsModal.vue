@@ -84,7 +84,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             <span class="avatar">{{ session.user?.displayName?.slice(0, 1) }}</span>
             <div>
               <strong>{{ session.user?.displayName }}</strong>
-              <span>{{ session.user?.group?.name }} 用户组</span>
+              <span>管理员账号</span>
             </div>
           </div>
 
@@ -93,7 +93,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             <div><h2>账号信息</h2><p>更新侧边栏中显示的昵称与登录用户名。</p></div>
           </div>
           <div class="settings-form-grid">
-            <label class="field"><span>用户昵称</span><input ref="displayNameInput" v-model.trim="form.displayName" required maxlength="64" autocomplete="name" placeholder="输入显示名称" /></label>
+            <label class="field"><span>显示名称</span><input ref="displayNameInput" v-model.trim="form.displayName" required maxlength="64" autocomplete="name" placeholder="输入显示名称" /></label>
             <label class="field"><span>登录用户名</span><input v-model.trim="form.username" required maxlength="64" autocomplete="username" placeholder="输入登录账号" /></label>
           </div>
 

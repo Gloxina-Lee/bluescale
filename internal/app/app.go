@@ -20,13 +20,16 @@ type Config struct {
 }
 
 type App struct {
-	db           *sql.DB
-	dataDir      string
-	imagesDir    string
-	frontend     fs.FS
-	sessions     *sessionStore
-	setupMu      sync.Mutex
-	maxFileBytes int64
+	db              *sql.DB
+	dataDir         string
+	imagesDir       string
+	frontend        fs.FS
+	sessions        *sessionStore
+	settings        applicationSettings
+	setupMu         sync.Mutex
+	settingsMu      sync.RWMutex
+	loginFailuresMu sync.Mutex
+	loginFailures   map[string]loginFailure
 }
 
 func New(config Config) (*App, error) {
@@ -51,14 +54,32 @@ func New(config Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateImageStorage(db, imagesDir); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := finalizeSingleUserDatabase(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := initializeAlbumDatabase(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	settings, err := loadApplicationSettings(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &App{
-		db:           db,
-		dataDir:      dataDir,
-		imagesDir:    imagesDir,
-		frontend:     config.Frontend,
-		sessions:     newSessionStore(24 * time.Hour),
-		maxFileBytes: 25 << 20,
+		db:            db,
+		dataDir:       dataDir,
+		imagesDir:     imagesDir,
+		frontend:      config.Frontend,
+		sessions:      newSessionStore(db, 24*time.Hour),
+		settings:      settings,
+		loginFailures: make(map[string]loginFailure),
 	}, nil
 }
 
@@ -74,17 +95,17 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logout", a.requireAuth(a.handleLogout))
 	mux.HandleFunc("GET /api/me", a.requireAuth(a.handleMe))
 	mux.HandleFunc("PUT /api/me", a.requireAuth(a.handleUpdateMe))
-	mux.HandleFunc("GET /api/images", a.requirePermission(permissionManageImages, a.handleListImages))
-	mux.HandleFunc("POST /api/images", a.requirePermission(permissionUpload, a.handleUploadImages))
-	mux.HandleFunc("DELETE /api/images", a.requirePermission(permissionManageImages, a.handleDeleteImages))
-	mux.HandleFunc("GET /api/users", a.requirePermission(permissionManageUsers, a.handleListUsers))
-	mux.HandleFunc("POST /api/users", a.requirePermission(permissionManageUsers, a.handleCreateUser))
-	mux.HandleFunc("PUT /api/users/{id}", a.requirePermission(permissionManageUsers, a.handleUpdateUser))
-	mux.HandleFunc("DELETE /api/users/{id}", a.requirePermission(permissionManageUsers, a.handleDeleteUser))
-	mux.HandleFunc("GET /api/user-groups", a.requirePermission(permissionManageUsers, a.handleListUserGroups))
-	mux.HandleFunc("POST /api/user-groups", a.requirePermission(permissionManageUsers, a.handleCreateUserGroup))
-	mux.HandleFunc("PUT /api/user-groups/{id}", a.requirePermission(permissionManageUsers, a.handleUpdateUserGroup))
-	mux.HandleFunc("DELETE /api/user-groups/{id}", a.requirePermission(permissionManageUsers, a.handleDeleteUserGroup))
+	mux.HandleFunc("GET /api/settings", a.requireAuth(a.handleGetSettings))
+	mux.HandleFunc("PUT /api/settings", a.requireAuth(a.handleUpdateSettings))
+	mux.HandleFunc("GET /api/albums", a.requireAuth(a.handleListAlbums))
+	mux.HandleFunc("POST /api/albums", a.requireAuth(a.handleCreateAlbum))
+	mux.HandleFunc("DELETE /api/albums", a.requireAuth(a.handleDeleteAlbums))
+	mux.HandleFunc("POST /api/albums/merge", a.requireAuth(a.handleMergeAlbums))
+	mux.HandleFunc("GET /api/images", a.requireAuth(a.handleListImages))
+	mux.HandleFunc("POST /api/images", a.requireAuth(a.handleUploadImages))
+	mux.HandleFunc("DELETE /api/images", a.requireAuth(a.handleDeleteImages))
+	mux.HandleFunc("POST /api/images/albums", a.requireAuth(a.handleAddImagesToAlbums))
+	mux.HandleFunc("DELETE /api/images/albums", a.requireAuth(a.handleRemoveImagesFromAlbums))
 	mux.HandleFunc("GET /i/{name}", a.handleServeImage)
 	mux.HandleFunc("/", a.handleFrontend)
 
@@ -94,8 +115,9 @@ func (a *App) Handler() http.Handler {
 func (a *App) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
+		sourceIP := a.clientIP(r)
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(started).Round(time.Millisecond))
+		log.Printf("%s %s %s %s", sourceIP, r.Method, r.URL.Path, time.Since(started).Round(time.Millisecond))
 	})
 }
 

@@ -4,8 +4,9 @@ import LoginView from './views/LoginView.vue'
 import AppShell from './components/AppShell.vue'
 import UploadView from './views/UploadView.vue'
 import ImagesView from './views/ImagesView.vue'
-import UsersView from './views/UsersView.vue'
-import { defaultRouteName, hasPermission, loadStatus, loadUser, session } from './session'
+import AlbumsView from './views/AlbumsView.vue'
+import SettingsView from './views/SettingsView.vue'
+import { loadStatus, loadUser, session } from './session'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -18,9 +19,10 @@ const router = createRouter({
       meta: { auth: true },
       children: [
         { path: '', redirect: '/upload' },
-        { path: 'upload', name: 'upload', component: UploadView, meta: { permission: 'upload' } },
-        { path: 'images', name: 'images', component: ImagesView, meta: { permission: 'manageImages' } },
-        { path: 'users', name: 'users', component: UsersView, meta: { permission: 'manageUsers' } },
+        { path: 'upload', name: 'upload', component: UploadView },
+        { path: 'images', name: 'images', component: ImagesView },
+        { path: 'albums', name: 'albums', component: AlbumsView },
+        { path: 'settings', name: 'settings', component: SettingsView },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -34,11 +36,9 @@ router.beforeEach(async (to) => {
     if (!session.configured) return true
 
     await loadUser()
-    if (to.name === 'setup') return session.user ? { name: defaultRouteName() } : { name: 'login' }
-    if (to.name === 'login' && session.user) return { name: defaultRouteName() }
+    if (to.name === 'setup') return session.user ? { name: 'upload' } : { name: 'login' }
+    if (to.name === 'login' && session.user) return { name: 'upload' }
     if (to.matched.some((route) => route.meta.auth) && !session.user) return { name: 'login' }
-    const permission = to.matched.map((route) => route.meta.permission).find(Boolean)
-    if (permission && !hasPermission(permission)) return { name: defaultRouteName() }
     return true
   } catch {
     return true

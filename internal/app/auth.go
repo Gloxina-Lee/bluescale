@@ -3,12 +3,13 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -16,106 +17,62 @@ import (
 
 const sessionCookieName = "bluescale_session"
 
-const (
-	permissionUpload       = "upload"
-	permissionManageImages = "manageImages"
-	permissionManageUsers  = "manageUsers"
-)
+type administratorContextKey struct{}
 
-type userContextKey struct{}
-
-type permissions struct {
-	Upload       bool `json:"upload"`
-	ManageImages bool `json:"manageImages"`
-	ManageUsers  bool `json:"manageUsers"`
-}
-
-func (p permissions) allows(permission string) bool {
-	switch permission {
-	case permissionUpload:
-		return p.Upload
-	case permissionManageImages:
-		return p.ManageImages
-	case permissionManageUsers:
-		return p.ManageUsers
-	default:
-		return false
-	}
-}
-
-type userGroupReference struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	IsSystem  bool   `json:"isSystem"`
-	IsDefault bool   `json:"isDefault"`
-}
-
-type userAccount struct {
-	ID          int64              `json:"id"`
-	DisplayName string             `json:"displayName"`
-	Username    string             `json:"username"`
-	Group       userGroupReference `json:"group"`
-	Permissions permissions        `json:"permissions"`
-}
-
-type session struct {
-	userID    int64
-	expiresAt time.Time
+type administrator struct {
+	ID          int64  `json:"id"`
+	DisplayName string `json:"displayName"`
+	Username    string `json:"username"`
 }
 
 type sessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]session
+	db       *sql.DB
 	lifetime time.Duration
 }
 
-func newSessionStore(lifetime time.Duration) *sessionStore {
-	return &sessionStore{sessions: make(map[string]session), lifetime: lifetime}
+func newSessionStore(db *sql.DB, lifetime time.Duration) *sessionStore {
+	return &sessionStore{db: db, lifetime: lifetime}
 }
 
-func (s *sessionStore) create(userID int64) (string, time.Time, error) {
+func hashSessionToken(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *sessionStore) create() (string, time.Time, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", time.Time{}, err
 	}
 	token := hex.EncodeToString(raw)
 	expiresAt := time.Now().Add(s.lifetime)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, existing := range s.sessions {
-		if time.Now().After(existing.expiresAt) {
-			delete(s.sessions, key)
-		}
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix()); err != nil {
+		return "", time.Time{}, err
 	}
-	s.sessions[token] = session{userID: userID, expiresAt: expiresAt}
+	if _, err := s.db.Exec(`INSERT INTO sessions (token_hash, expires_at) VALUES (?, ?)`, hashSessionToken(token), expiresAt.Unix()); err != nil {
+		return "", time.Time{}, err
+	}
 	return token, expiresAt, nil
 }
 
-func (s *sessionStore) get(token string) (int64, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.sessions[token]
-	if !ok || time.Now().After(current.expiresAt) {
-		delete(s.sessions, token)
-		return 0, false
+func (s *sessionStore) get(token string) (bool, error) {
+	var expiresAt int64
+	err := s.db.QueryRow(`SELECT expires_at FROM sessions WHERE token_hash = ?`, hashSessionToken(token)).Scan(&expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	return current.userID, true
+	if err != nil {
+		return false, err
+	}
+	if expiresAt <= time.Now().Unix() {
+		_, _ = s.db.Exec(`DELETE FROM sessions WHERE token_hash = ?`, hashSessionToken(token))
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *sessionStore) delete(token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, token)
-}
-
-func (s *sessionStore) deleteUser(userID int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for token, current := range s.sessions {
-		if current.userID == userID {
-			delete(s.sessions, token)
-		}
-	}
+	_, _ = s.db.Exec(`DELETE FROM sessions WHERE token_hash = ?`, hashSessionToken(token))
 }
 
 func setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, secure bool) {
@@ -133,45 +90,16 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
-func requestIsHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+func (a *App) loadAdministrator() (administrator, error) {
+	var account administrator
+	err := a.db.QueryRow(`SELECT id, display_name, username FROM administrators WHERE id = 1`).
+		Scan(&account.ID, &account.DisplayName, &account.Username)
+	return account, err
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanUserAccount(scanner rowScanner) (userAccount, error) {
-	var account userAccount
-	var systemKey string
-	var canUpload, canManageImages, canManageUsers int
-	err := scanner.Scan(
-		&account.ID, &account.DisplayName, &account.Username,
-		&account.Group.ID, &account.Group.Name, &systemKey,
-		&canUpload, &canManageImages, &canManageUsers,
-	)
-	if err != nil {
-		return userAccount{}, err
-	}
-	account.Group.IsSystem = systemKey != ""
-	account.Group.IsDefault = systemKey == "user"
-	account.Permissions = permissions{
-		Upload: canUpload == 1, ManageImages: canManageImages == 1, ManageUsers: canManageUsers == 1,
-	}
-	return account, nil
-}
-
-const accountSelect = `SELECT u.id, u.display_name, u.username, g.id, g.name,
-	COALESCE(g.system_key, ''), g.can_upload, g.can_manage_images, g.can_manage_users
-	FROM users u JOIN user_groups g ON g.id = u.group_id`
-
-func (a *App) loadUserAccount(userID int64) (userAccount, error) {
-	return scanUserAccount(a.db.QueryRow(accountSelect+` WHERE u.id = ?`, userID))
-}
-
-func currentUser(r *http.Request) (userAccount, bool) {
-	user, ok := r.Context().Value(userContextKey{}).(userAccount)
-	return user, ok
+func currentAdministrator(r *http.Request) (administrator, bool) {
+	account, ok := r.Context().Value(administratorContextKey{}).(administrator)
+	return account, ok
 }
 
 func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -181,49 +109,38 @@ func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "请先登录")
 			return
 		}
-		userID, ok := a.sessions.get(cookie.Value)
-		if !ok {
-			clearSessionCookie(w, requestIsHTTPS(r))
+		valid, err := a.sessions.get(cookie.Value)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "无法读取登录会话")
+			return
+		}
+		if !valid {
+			clearSessionCookie(w, a.requestIsHTTPS(r))
 			writeError(w, http.StatusUnauthorized, "登录已过期，请重新登录")
 			return
 		}
-		user, err := a.loadUserAccount(userID)
+		account, err := a.loadAdministrator()
 		if errors.Is(err, sql.ErrNoRows) {
 			a.sessions.delete(cookie.Value)
-			clearSessionCookie(w, requestIsHTTPS(r))
-			writeError(w, http.StatusUnauthorized, "账号已不可用，请重新登录")
+			clearSessionCookie(w, a.requestIsHTTPS(r))
+			writeError(w, http.StatusUnauthorized, "管理员账号不可用，请重新配置")
 			return
 		}
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法读取登录账号")
+			writeError(w, http.StatusInternalServerError, "无法读取管理员账号")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
+		next(w, r.WithContext(context.WithValue(r.Context(), administratorContextKey{}, account)))
 	}
-}
-
-func (a *App) requirePermission(permission string, next http.HandlerFunc) http.HandlerFunc {
-	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := currentUser(r)
-		if !ok {
-			writeError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
-		if !user.Permissions.allows(permission) {
-			writeError(w, http.StatusForbidden, "当前用户组没有执行此操作的权限")
-			return
-		}
-		next(w, r)
-	})
 }
 
 func (a *App) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	var count int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM administrators`).Scan(&count); err != nil {
 		writeError(w, http.StatusInternalServerError, "无法读取系统状态")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"configured": count > 0})
+	writeJSON(w, http.StatusOK, map[string]bool{"configured": count == 1})
 }
 
 type setupRequest struct {
@@ -273,7 +190,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var count int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM administrators`).Scan(&count); err != nil {
 		writeError(w, http.StatusInternalServerError, "无法读取配置状态")
 		return
 	}
@@ -283,15 +200,6 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := tx.Exec(`INSERT INTO administrators (id, display_name, username, password_hash) VALUES (1, ?, ?, ?)`, request.DisplayName, request.Username, string(hash)); err != nil {
 		writeError(w, http.StatusInternalServerError, "无法保存管理员")
-		return
-	}
-	var adminGroupID int64
-	if err := tx.QueryRow(`SELECT id FROM user_groups WHERE system_key = 'admin'`).Scan(&adminGroupID); err != nil {
-		writeError(w, http.StatusInternalServerError, "无法读取管理员组")
-		return
-	}
-	if _, err := tx.Exec(`INSERT INTO users (display_name, username, password_hash, group_id) VALUES (?, ?, ?, ?)`, request.DisplayName, request.Username, string(hash), adminGroupID); err != nil {
-		writeError(w, http.StatusInternalServerError, "无法保存管理员账号")
 		return
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('database_type', ?)`, request.DatabaseType); err != nil {
@@ -319,49 +227,65 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Username = strings.TrimSpace(request.Username)
-	var user userAccount
-	var passwordHash, systemKey string
-	var canUpload, canManageImages, canManageUsers int
-	err := a.db.QueryRow(`SELECT u.id, u.display_name, u.username, u.password_hash,
-		g.id, g.name, COALESCE(g.system_key, ''), g.can_upload, g.can_manage_images, g.can_manage_users
-		FROM users u JOIN user_groups g ON g.id = u.group_id WHERE u.username = ? COLLATE NOCASE`, request.Username).
-		Scan(&user.ID, &user.DisplayName, &user.Username, &passwordHash, &user.Group.ID, &user.Group.Name, &systemKey, &canUpload, &canManageImages, &canManageUsers)
+	security := a.currentSettings().Security
+	clientIP := a.clientIP(r)
+	if security.LimitLoginFailures {
+		allowed, retryAfter := a.loginAllowed(clientIP, security.MaxLoginFailures)
+		if !allowed {
+			seconds := int(retryAfter.Round(time.Second).Seconds())
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			writeError(w, http.StatusTooManyRequests, "登录失败次数过多，请在 15 分钟后重试")
+			return
+		}
+	}
+	loginFailed := func() {
+		if security.LimitLoginFailures {
+			a.recordLoginFailure(clientIP)
+		}
+		writeError(w, http.StatusUnauthorized, "账号或密码不正确")
+	}
+	var account administrator
+	var passwordHash string
+	err := a.db.QueryRow(`SELECT id, display_name, username, password_hash
+		FROM administrators WHERE username = ? COLLATE NOCASE`, request.Username).
+		Scan(&account.ID, &account.DisplayName, &account.Username, &passwordHash)
 	if err != nil {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(request.Password))
-		writeError(w, http.StatusUnauthorized, "账号或密码不正确")
+		loginFailed()
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(request.Password)); err != nil {
-		writeError(w, http.StatusUnauthorized, "账号或密码不正确")
+		loginFailed()
 		return
 	}
-	user.Group.IsSystem = systemKey != ""
-	user.Group.IsDefault = systemKey == "user"
-	user.Permissions = permissions{Upload: canUpload == 1, ManageImages: canManageImages == 1, ManageUsers: canManageUsers == 1}
-	token, expiresAt, err := a.sessions.create(user.ID)
+	a.clearLoginFailure(clientIP)
+	token, expiresAt, err := a.sessions.create()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "无法创建登录会话")
 		return
 	}
-	setSessionCookie(w, token, expiresAt, requestIsHTTPS(r))
-	writeJSON(w, http.StatusOK, user)
+	setSessionCookie(w, token, expiresAt, a.requestIsHTTPS(r))
+	writeJSON(w, http.StatusOK, account)
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		a.sessions.delete(cookie.Value)
 	}
-	clearSessionCookie(w, requestIsHTTPS(r))
+	clearSessionCookie(w, a.requestIsHTTPS(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	account, ok := currentAdministrator(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "请先登录")
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, account)
 }
 
 type updateMeRequest struct {
@@ -372,7 +296,7 @@ type updateMeRequest struct {
 }
 
 func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	account, ok := currentAdministrator(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "请先登录")
 		return
@@ -385,7 +309,7 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Username = strings.TrimSpace(request.Username)
 	if request.DisplayName == "" || len([]rune(request.DisplayName)) > 64 {
-		writeError(w, http.StatusBadRequest, "用户名称长度应为 1–64 个字符")
+		writeError(w, http.StatusBadRequest, "显示名称长度应为 1–64 个字符")
 		return
 	}
 	if request.Username == "" || len([]rune(request.Username)) > 64 {
@@ -399,15 +323,14 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	if request.NewPassword == "" {
-		_, err = a.db.Exec(`UPDATE users SET display_name = ?, username = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`, request.DisplayName, request.Username, user.ID)
+		_, err = a.db.Exec(`UPDATE administrators SET display_name = ?, username = ? WHERE id = ?`, request.DisplayName, request.Username, account.ID)
 	} else {
 		if request.CurrentPassword == "" {
 			writeError(w, http.StatusBadRequest, "修改密码时请输入当前密码")
 			return
 		}
 		var passwordHash string
-		if err := a.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, user.ID).Scan(&passwordHash); err != nil {
+		if err := a.db.QueryRow(`SELECT password_hash FROM administrators WHERE id = ?`, account.ID).Scan(&passwordHash); err != nil {
 			writeError(w, http.StatusInternalServerError, "无法验证当前密码")
 			return
 		}
@@ -420,20 +343,15 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "无法更新密码")
 			return
 		}
-		_, err = a.db.Exec(`UPDATE users SET display_name = ?, username = ?, password_hash = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`, request.DisplayName, request.Username, string(newHash), user.ID)
-	}
-	if isUniqueConstraintError(err) {
-		writeError(w, http.StatusConflict, "登录账号已存在")
-		return
+		_, err = a.db.Exec(`UPDATE administrators SET display_name = ?, username = ?, password_hash = ? WHERE id = ?`, request.DisplayName, request.Username, string(newHash), account.ID)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "无法更新个人信息")
+		writeError(w, http.StatusInternalServerError, "无法更新管理员信息")
 		return
 	}
-	updated, err := a.loadUserAccount(user.ID)
+	updated, err := a.loadAdministrator()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "无法读取个人信息")
+		writeError(w, http.StatusInternalServerError, "无法读取管理员信息")
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)

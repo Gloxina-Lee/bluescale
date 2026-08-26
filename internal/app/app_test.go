@@ -5,19 +5,31 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
+)
+
+const (
+	testAdminDisplayName = "BlueScale"
+	testAdminUsername    = "Admin"
+	testAdminPassword    = "Admin123"
 )
 
 func TestCompleteImageLifecycle(t *testing.T) {
@@ -31,12 +43,7 @@ func TestCompleteImageLifecycle(t *testing.T) {
 	t.Cleanup(func() { _ = application.Close() })
 	server := httptest.NewServer(application.Handler())
 	t.Cleanup(server.Close)
-
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{Jar: jar}
+	client := newCookieClient(t)
 
 	var status struct {
 		Configured bool `json:"configured"`
@@ -45,64 +52,22 @@ func TestCompleteImageLifecycle(t *testing.T) {
 	if status.Configured {
 		t.Fatal("new instance must not be configured")
 	}
+	setupTestAdministrator(t, client, server.URL)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/setup", setupPayload(), http.StatusConflict, nil)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": "wrong-password",
+	}, http.StatusUnauthorized, nil)
 
-	setup := map[string]string{
-		"displayName":  "测试管理员",
-		"username":     "admin",
-		"password":     "secure-password",
-		"databaseType": "sqlite",
-	}
-	doJSON(t, client, http.MethodPost, server.URL+"/api/setup", setup, http.StatusCreated, nil)
-	doJSON(t, client, http.MethodPost, server.URL+"/api/setup", setup, http.StatusConflict, nil)
-	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "admin", "password": "wrong-password"}, http.StatusUnauthorized, nil)
-
-	var admin userAccount
-	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "admin", "password": "secure-password"}, http.StatusOK, &admin)
-	if admin.DisplayName != "测试管理员" {
-		t.Fatalf("unexpected administrator: %#v", admin)
+	var account administrator
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, &account)
+	if account.DisplayName != testAdminDisplayName || account.Username != testAdminUsername {
+		t.Fatalf("unexpected administrator: %#v", account)
 	}
 
-	pngBytes, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var multipartBody bytes.Buffer
-	writer := multipart.NewWriter(&multipartBody)
-	part, err := writer.CreateFormFile("files", "pixel.png")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := part.Write(pngBytes); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	uploadRequest, err := http.NewRequest(http.MethodPost, server.URL+"/api/images", &multipartBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	uploadRequest.Header.Set("Content-Type", writer.FormDataContentType())
-	uploadResponse, err := client.Do(uploadRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer uploadResponse.Body.Close()
-	if uploadResponse.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(uploadResponse.Body)
-		t.Fatalf("upload status = %d, body = %s", uploadResponse.StatusCode, body)
-	}
-	var uploaded struct {
-		Images []imageRecord `json:"images"`
-	}
-	if err := json.NewDecoder(uploadResponse.Body).Decode(&uploaded); err != nil {
-		t.Fatal(err)
-	}
-	if len(uploaded.Images) != 1 || !strings.HasPrefix(uploaded.Images[0].URL, "/i/") {
-		t.Fatalf("unexpected upload response: %#v", uploaded)
-	}
-
-	imageResponse, err := client.Get(server.URL + uploaded.Images[0].URL)
+	uploaded := uploadTestPNG(t, client, server.URL, "pixel.png")
+	imageResponse, err := client.Get(server.URL + uploaded.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +76,7 @@ func TestCompleteImageLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if imageResponse.StatusCode != http.StatusOK || !bytes.Equal(servedBytes, pngBytes) {
+	if imageResponse.StatusCode != http.StatusOK || !bytes.Equal(servedBytes, testPNGBytes(t)) {
 		t.Fatalf("Go image response did not preserve the uploaded file")
 	}
 	if imageResponse.Header.Get("Content-Type") != "image/png" {
@@ -127,8 +92,8 @@ func TestCompleteImageLifecycle(t *testing.T) {
 		t.Fatalf("unexpected image listing: %#v", listing)
 	}
 
-	doJSON(t, client, http.MethodDelete, server.URL+"/api/images", map[string]any{"ids": []int64{uploaded.Images[0].ID}}, http.StatusNoContent, nil)
-	deletedResponse, err := client.Get(server.URL + uploaded.Images[0].URL)
+	doJSON(t, client, http.MethodDelete, server.URL+"/api/images", map[string]any{"ids": []int64{uploaded.ID}}, http.StatusNoContent, nil)
+	deletedResponse, err := client.Get(server.URL + uploaded.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,118 +103,138 @@ func TestCompleteImageLifecycle(t *testing.T) {
 	}
 }
 
-func TestMultiUserPermissionsAndCRUD(t *testing.T) {
-	application, err := New(Config{
-		DataDir: t.TempDir(),
-		Frontend: fstest.MapFS{
-			"index.html": &fstest.MapFile{Data: []byte("test")},
-		},
-	})
+func TestSessionSurvivesServerRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	frontend := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}}
+	application, err := New(Config{DataDir: dataDir, Frontend: frontend})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = application.Close() })
 	server := httptest.NewServer(application.Handler())
-	t.Cleanup(server.Close)
+	client := newCookieClient(t)
+	setupTestAdministrator(t, client, server.URL)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
 
-	adminClient := newCookieClient(t)
-	setup := map[string]string{
-		"displayName": "主管理员", "username": "admin", "password": "secure-password", "databaseType": "sqlite",
+	firstURL := mustParseURL(t, server.URL)
+	cookies := client.Jar.Cookies(firstURL)
+	if len(cookies) != 1 || cookies[0].Name != sessionCookieName {
+		t.Fatalf("unexpected session cookies: %#v", cookies)
 	}
-	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/setup", setup, http.StatusCreated, nil)
-	var admin userAccount
-	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "admin", "password": "secure-password"}, http.StatusOK, &admin)
-	if !admin.Permissions.Upload || !admin.Permissions.ManageImages || !admin.Permissions.ManageUsers || admin.Group.Name != "Admin" {
-		t.Fatalf("unexpected admin permissions: %#v", admin)
-	}
-
-	var groupListing struct {
-		Groups []userGroupRecord `json:"groups"`
-	}
-	doJSON(t, adminClient, http.MethodGet, server.URL+"/api/user-groups", nil, http.StatusOK, &groupListing)
-	var adminGroup, defaultGroup userGroupRecord
-	for _, group := range groupListing.Groups {
-		if group.Name == "Admin" {
-			adminGroup = group
-		}
-		if group.IsDefault {
-			defaultGroup = group
-		}
-	}
-	if adminGroup.ID == 0 || defaultGroup.ID == 0 || !defaultGroup.Permissions.Upload || defaultGroup.Permissions.ManageImages || defaultGroup.Permissions.ManageUsers {
-		t.Fatalf("unexpected built-in groups: %#v", groupListing.Groups)
+	server.Close()
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	groupPayload := map[string]any{
-		"name": "内容编辑", "permissions": map[string]bool{"upload": true, "manageImages": true, "manageUsers": false},
+	reopened, err := New(Config{DataDir: dataDir, Frontend: frontend})
+	if err != nil {
+		t.Fatal(err)
 	}
-	var customGroup userGroupRecord
-	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/user-groups", groupPayload, http.StatusCreated, &customGroup)
-	groupPayload["name"] = "编辑团队"
-	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/user-groups/"+strconv.FormatInt(customGroup.ID, 10), groupPayload, http.StatusOK, &customGroup)
-	if customGroup.Name != "编辑团队" {
-		t.Fatalf("group was not updated: %#v", customGroup)
+	t.Cleanup(func() { _ = reopened.Close() })
+	restartedServer := httptest.NewServer(reopened.Handler())
+	t.Cleanup(restartedServer.Close)
+	client.Jar.SetCookies(mustParseURL(t, restartedServer.URL), cookies)
+
+	var current administrator
+	doJSON(t, client, http.MethodGet, restartedServer.URL+"/api/me", nil, http.StatusOK, &current)
+	if current.DisplayName != testAdminDisplayName {
+		t.Fatalf("session restored the wrong administrator: %#v", current)
 	}
-
-	userPayload := map[string]any{
-		"displayName": "编辑用户", "username": "editor", "password": "editor-password", "groupId": customGroup.ID,
+	var storedHash string
+	if err := reopened.db.QueryRow(`SELECT token_hash FROM sessions`).Scan(&storedHash); err != nil {
+		t.Fatal(err)
 	}
-	var editor managedUserRecord
-	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/users", userPayload, http.StatusCreated, &editor)
-	doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/user-groups/"+strconv.FormatInt(customGroup.ID, 10), nil, http.StatusConflict, nil)
-
-	editorClient := newCookieClient(t)
-	var editorLogin userAccount
-	doJSON(t, editorClient, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "editor", "password": "editor-password"}, http.StatusOK, &editorLogin)
-	doJSON(t, editorClient, http.MethodGet, server.URL+"/api/images", nil, http.StatusOK, nil)
-	doJSON(t, editorClient, http.MethodPost, server.URL+"/api/images", nil, http.StatusBadRequest, nil)
-	doJSON(t, editorClient, http.MethodGet, server.URL+"/api/users", nil, http.StatusForbidden, nil)
-
-	var defaultUser managedUserRecord
-	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/users", map[string]any{
-		"displayName": "普通用户", "username": "viewer", "password": "viewer-password", "groupId": 0,
-	}, http.StatusCreated, &defaultUser)
-	if !defaultUser.Group.IsDefault {
-		t.Fatalf("new user did not receive default group: %#v", defaultUser)
+	if storedHash == cookies[0].Value || storedHash != hashSessionToken(cookies[0].Value) {
+		t.Fatal("session token was not stored as the expected digest")
 	}
-	defaultClient := newCookieClient(t)
-	doJSON(t, defaultClient, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "viewer", "password": "viewer-password"}, http.StatusOK, nil)
-	doJSON(t, defaultClient, http.MethodPost, server.URL+"/api/images", nil, http.StatusBadRequest, nil)
-	doJSON(t, defaultClient, http.MethodGet, server.URL+"/api/images", nil, http.StatusForbidden, nil)
-	doJSON(t, defaultClient, http.MethodGet, server.URL+"/api/users", nil, http.StatusForbidden, nil)
-
-	userPayload["password"] = ""
-	userPayload["groupId"] = defaultGroup.ID
-	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/users/"+strconv.FormatInt(editor.ID, 10), userPayload, http.StatusOK, &editor)
-	doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/user-groups/"+strconv.FormatInt(customGroup.ID, 10), nil, http.StatusNoContent, nil)
-	doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/users/"+strconv.FormatInt(editor.ID, 10), nil, http.StatusNoContent, nil)
-	doJSON(t, editorClient, http.MethodGet, server.URL+"/api/me", nil, http.StatusUnauthorized, nil)
-	doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/users/"+strconv.FormatInt(admin.ID, 10), nil, http.StatusConflict, nil)
-	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/user-groups/"+strconv.FormatInt(adminGroup.ID, 10), groupPayload, http.StatusForbidden, nil)
 }
 
-func TestLegacyAdministratorMigration(t *testing.T) {
+func TestMultiUserDatabaseMigratesToSingleUser(t *testing.T) {
 	dataDir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "bluescale.db"))
+	databasePath := filepath.Join(dataDir, "bluescale.db")
+	db, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte("legacy-password"), bcrypt.DefaultCost)
+	legacyHash, err := bcrypt.GenerateFromPassword([]byte("legacy-password"), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE administrators (
-		id INTEGER PRIMARY KEY CHECK (id = 1), display_name TEXT NOT NULL,
-		username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-	)`); err != nil {
+	currentHash, err := bcrypt.GenerateFromPassword([]byte("current-password"), bcrypt.DefaultCost)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO administrators (id, display_name, username, password_hash) VALUES (1, ?, ?, ?)`, "旧管理员", "legacy", string(hash)); err != nil {
+	statements := []string{
+		`CREATE TABLE administrators (
+			id INTEGER PRIMARY KEY CHECK (id = 1), display_name TEXT NOT NULL,
+			username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		)`,
+		`CREATE TABLE user_groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+			system_key TEXT UNIQUE, can_upload INTEGER NOT NULL,
+			can_manage_images INTEGER NOT NULL, can_manage_users INTEGER NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		)`,
+		`CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, display_name TEXT NOT NULL,
+			username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+			group_id INTEGER NOT NULL REFERENCES user_groups(id),
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		)`,
+		`CREATE TABLE images (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id),
+			original_name TEXT NOT NULL, storage_name TEXT NOT NULL UNIQUE,
+			mime_type TEXT NOT NULL, size INTEGER NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		)`,
+		`CREATE TABLE sessions (
+			token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+			expires_at INTEGER NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO administrators (id, display_name, username, password_hash) VALUES (1, ?, ?, ?)`, "旧资料", "legacy", string(legacyHash)); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_groups (id, name, system_key, can_upload, can_manage_images, can_manage_users) VALUES
+		(1, 'Admin', 'admin', 1, 1, 1), (2, 'User', 'user', 1, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, display_name, username, password_hash, group_id) VALUES
+		(1, '当前管理员', 'current-admin', ?, 1), (2, '第二账号', 'second', ?, 2)`, string(currentHash), string(legacyHash)); err != nil {
+		t.Fatal(err)
+	}
+	storageNames := []string{
+		"0123456789abcdef0123456789abcdef.png",
+		"fedcba9876543210fedcba9876543210.png",
+	}
+	for index, storageName := range storageNames {
+		if _, err := db.Exec(`INSERT INTO images (user_id, original_name, storage_name, mime_type, size) VALUES (?, ?, ?, 'image/png', ?)`, index+1, "legacy.png", storageName, len("image-data")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
+	}
+
+	imagesDir := filepath.Join(dataDir, "images")
+	for index, storageName := range storageNames {
+		directory := filepath.Join(imagesDir, strconv.Itoa(index+1))
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, storageName), []byte("image-data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	application, err := New(Config{DataDir: dataDir, Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}}})
@@ -260,33 +245,74 @@ func TestLegacyAdministratorMigration(t *testing.T) {
 	server := httptest.NewServer(application.Handler())
 	t.Cleanup(server.Close)
 	client := newCookieClient(t)
-	var migrated userAccount
-	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "legacy", "password": "legacy-password"}, http.StatusOK, &migrated)
-	if migrated.DisplayName != "旧管理员" || migrated.Group.Name != "Admin" || !migrated.Permissions.ManageUsers {
-		t.Fatalf("legacy administrator was not migrated: %#v", migrated)
+
+	var migrated administrator
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": "current-admin", "password": "current-password",
+	}, http.StatusOK, &migrated)
+	if migrated.DisplayName != "当前管理员" {
+		t.Fatalf("unexpected migrated administrator: %#v", migrated)
 	}
+
+	var listing struct {
+		Images []imageRecord `json:"images"`
+		Total  int           `json:"total"`
+	}
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images", nil, http.StatusOK, &listing)
+	if listing.Total != 2 || len(listing.Images) != 2 {
+		t.Fatalf("all prior images were not retained: %#v", listing)
+	}
+	for _, storageName := range storageNames {
+		if stored, err := os.ReadFile(filepath.Join(imagesDir, storageName)); err != nil || string(stored) != "image-data" {
+			t.Fatalf("image %s was not migrated to shared storage: %v", storageName, err)
+		}
+	}
+	for _, directory := range []string{"1", "2"} {
+		if _, err := os.Stat(filepath.Join(imagesDir, directory)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy user image directory %s still exists", directory)
+		}
+	}
+
+	for _, table := range []string{"users", "user_groups"} {
+		exists, err := tableExists(application.db, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Fatalf("legacy table %s still exists", table)
+		}
+	}
+	hasOwner, err := tableHasColumn(application.db, "images", "user_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasOwner {
+		t.Fatal("images.user_id still exists")
+	}
+	doJSON(t, client, http.MethodGet, server.URL+"/api/users", nil, http.StatusNotFound, nil)
+	doJSON(t, client, http.MethodGet, server.URL+"/api/user-groups", nil, http.StatusNotFound, nil)
 }
 
-func TestProtectedRouteRequiresLogin(t *testing.T) {
+func TestProtectedRoutesRequireLogin(t *testing.T) {
 	application, err := New(Config{
-		DataDir: t.TempDir(),
-		Frontend: fstest.MapFS{
-			"index.html": &fstest.MapFile{Data: []byte("test")},
-		},
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	request := httptest.NewRequest(http.MethodGet, "/api/images", nil)
-	recorder := httptest.NewRecorder()
-	application.Handler().ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", recorder.Code)
+	for _, path := range []string{"/api/me", "/api/images", "/api/settings", "/api/albums"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s status = %d, want 401", path, recorder.Code)
+		}
 	}
 }
 
-func TestUpdateCurrentUserProfile(t *testing.T) {
+func TestUpdateAdministratorProfile(t *testing.T) {
 	application, err := New(Config{
 		DataDir:  t.TempDir(),
 		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
@@ -298,28 +324,423 @@ func TestUpdateCurrentUserProfile(t *testing.T) {
 	server := httptest.NewServer(application.Handler())
 	t.Cleanup(server.Close)
 	client := newCookieClient(t)
-	doJSON(t, client, http.MethodPost, server.URL+"/api/setup", map[string]string{
-		"displayName": "初始管理员", "username": "admin", "password": "secure-password", "databaseType": "sqlite",
-	}, http.StatusCreated, nil)
-	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "admin", "password": "secure-password"}, http.StatusOK, nil)
+	setupTestAdministrator(t, client, server.URL)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
 
-	var updated userAccount
+	var updated administrator
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
-		"displayName": "新的昵称", "username": "renamed", "currentPassword": "", "newPassword": "",
+		"displayName": "新的名称", "username": "Renamed", "currentPassword": "", "newPassword": "",
 	}, http.StatusOK, &updated)
-	if updated.DisplayName != "新的昵称" || updated.Username != "renamed" {
+	if updated.DisplayName != "新的名称" || updated.Username != "Renamed" {
 		t.Fatalf("profile was not updated: %#v", updated)
 	}
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
-		"displayName": "新的昵称", "username": "renamed", "currentPassword": "wrong-password", "newPassword": "new-secure-password",
+		"displayName": "新的名称", "username": "Renamed", "currentPassword": "wrong-password", "newPassword": "new-secure-password",
 	}, http.StatusUnauthorized, nil)
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
-		"displayName": "新的昵称", "username": "renamed", "currentPassword": "secure-password", "newPassword": "new-secure-password",
+		"displayName": "新的名称", "username": "Renamed", "currentPassword": testAdminPassword, "newPassword": "new-secure-password",
 	}, http.StatusOK, nil)
 
 	newClient := newCookieClient(t)
-	doJSON(t, newClient, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "renamed", "password": "secure-password"}, http.StatusUnauthorized, nil)
-	doJSON(t, newClient, http.MethodPost, server.URL+"/api/login", map[string]string{"username": "renamed", "password": "new-secure-password"}, http.StatusOK, nil)
+	doJSON(t, newClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": "Renamed", "password": testAdminPassword,
+	}, http.StatusUnauthorized, nil)
+	doJSON(t, newClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": "Renamed", "password": "new-secure-password",
+	}, http.StatusOK, nil)
+}
+
+func TestSettingsControlUploadLimitsConversionAndRenaming(t *testing.T) {
+	dataDir := t.TempDir()
+	application, err := New(Config{
+		DataDir:  dataDir,
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	client := newCookieClient(t)
+	setupTestAdministrator(t, client, server.URL)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+
+	var settings applicationSettings
+	doJSON(t, client, http.MethodGet, server.URL+"/api/settings", nil, http.StatusOK, &settings)
+	if settings.Upload.MaxImageSizeMB != 25 || settings.Upload.MaxImagesPerUpload != 50 {
+		t.Fatalf("unexpected default upload settings: %#v", settings.Upload)
+	}
+	settings.Upload.ConvertImages = true
+	settings.Upload.TargetImageFormat = "jpeg"
+	settings.Upload.CompressionQuality = 76
+	settings.Upload.RenameImages = true
+	settings.Upload.RenameMethod = "uuid_v4"
+	settings.Upload.StripUUIDHyphens = false
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
+
+	converted := uploadTestPNG(t, client, server.URL, "透明像素.png")
+	if converted.MimeType != "image/jpeg" || !regexp.MustCompile(`^[0-9a-f-]{36}\.jpg$`).MatchString(converted.StorageName) || converted.StorageName[14] != '4' {
+		t.Fatalf("unexpected converted image: %#v", converted)
+	}
+	response, err := client.Get(server.URL + converted.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	convertedBytes, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "image/jpeg" || len(convertedBytes) < 2 || convertedBytes[0] != 0xff || convertedBytes[1] != 0xd8 {
+		t.Fatalf("converted image was not served as JPEG: status=%d type=%q bytes=%x", response.StatusCode, response.Header.Get("Content-Type"), convertedBytes[:min(4, len(convertedBytes))])
+	}
+
+	settings.Upload.ConvertImages = false
+	settings.Upload.RenameImages = false
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, nil)
+	firstNamed := uploadTestPNG(t, client, server.URL, "my photo.png")
+	secondNamed := uploadTestPNG(t, client, server.URL, "my photo.png")
+	if firstNamed.StorageName != "my photo.png" || secondNamed.StorageName != "my photo-2.png" {
+		t.Fatalf("original-name collision handling failed: %q, %q", firstNamed.StorageName, secondNamed.StorageName)
+	}
+	settings.Upload.RenameImages = true
+	settings.Upload.RenameMethod = "uuid_v5"
+	settings.Upload.StripUUIDHyphens = true
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, nil)
+	firstV5 := uploadTestPNG(t, client, server.URL, "content.png")
+	secondV5 := uploadTestPNG(t, client, server.URL, "content-copy.png")
+	v5Pattern := regexp.MustCompile(`^[0-9a-f]{32}\.png$`)
+	if !v5Pattern.MatchString(firstV5.StorageName) || firstV5.StorageName[12] != '5' || firstV5.StorageName == secondV5.StorageName {
+		t.Fatalf("unexpected UUIDv5 names: %q, %q", firstV5.StorageName, secondV5.StorageName)
+	}
+
+	settings.Upload.MaxImageSizeMB = 1
+	settings.Upload.MaxImagesPerUpload = 1
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, nil)
+	status, body := uploadTestFiles(t, client, server.URL, []testUploadFile{
+		{name: "one.png", data: testPNGBytes(t)},
+		{name: "two.png", data: testPNGBytes(t)},
+	})
+	if status != http.StatusBadRequest || !bytes.Contains(body, []byte("单次最多上传 1 张图片")) {
+		t.Fatalf("upload-count limit status=%d body=%s", status, body)
+	}
+	oversized := append(append([]byte(nil), testPNGBytes(t)...), make([]byte, (1<<20)+1)...)
+	status, body = uploadTestFiles(t, client, server.URL, []testUploadFile{{name: "large.png", data: oversized}})
+	if status != http.StatusBadRequest || !bytes.Contains(body, []byte("超过 1 MB 限制")) {
+		t.Fatalf("upload-size limit status=%d body=%s", status, body)
+	}
+
+	settings.Upload.MaxImageSizeMB = 0
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusBadRequest, nil)
+	var persisted string
+	if err := application.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, applicationSettingsKey).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(persisted, `"maxImageSizeMB":1`) {
+		t.Fatalf("settings were not persisted: %s", persisted)
+	}
+}
+
+func TestImageConversionTargets(t *testing.T) {
+	for _, target := range []string{"jpeg", "png", "webp", "avif"} {
+		t.Run(target, func(t *testing.T) {
+			var converted bytes.Buffer
+			mimeType, extension, err := convertImage(&converted, bytes.NewReader(testPNGBytes(t)), "image/png", target, 80)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if supportedImageTypes[mimeType] != extension {
+				t.Fatalf("mismatched conversion result: %q %q", mimeType, extension)
+			}
+			config, err := decodeImageConfig(bytes.NewReader(converted.Bytes()), mimeType)
+			if err != nil {
+				t.Fatalf("converted output cannot be decoded: %v", err)
+			}
+			if config.Width != 1 || config.Height != 1 {
+				t.Fatalf("unexpected converted dimensions: %#v", config)
+			}
+		})
+	}
+}
+
+func TestLoginFailureLimitAndProxySourceIP(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	adminClient := newCookieClient(t)
+	setupTestAdministrator(t, adminClient, server.URL)
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+	settings := defaultApplicationSettings()
+	settings.Security.LimitLoginFailures = true
+	settings.Security.MaxLoginFailures = 2
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, nil)
+
+	limitedClient := newCookieClient(t)
+	for range 2 {
+		doJSON(t, limitedClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+			"username": testAdminUsername, "password": "wrong-password",
+		}, http.StatusUnauthorized, nil)
+	}
+	doJSON(t, limitedClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusTooManyRequests, nil)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.RemoteAddr = "10.0.0.9:3210"
+	request.Header.Set("X-Forwarded-For", "203.0.113.18, 10.0.0.2")
+	if got := application.clientIP(request); got != "10.0.0.9" {
+		t.Fatalf("proxy header was trusted while proxy mode was disabled: %q", got)
+	}
+	settings.Security.ReverseProxyMode = true
+	settings.Security.RealIPHeader = "X-Forwarded-For"
+	application.settingsMu.Lock()
+	application.settings = settings
+	application.settingsMu.Unlock()
+	if got := application.clientIP(request); got != "203.0.113.18" {
+		t.Fatalf("proxy source IP = %q, want 203.0.113.18", got)
+	}
+
+	var logs bytes.Buffer
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	originalPrefix := log.Prefix()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+		log.SetPrefix(originalPrefix)
+	})
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(logs.String(), "203.0.113.18 GET /api/status") {
+		t.Fatalf("request log did not include source IP: status=%d log=%q", recorder.Code, logs.String())
+	}
+}
+
+func TestAlbumsFilteringPaginationAndRelationships(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	client := newCookieClient(t)
+	setupTestAdministrator(t, client, server.URL)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+
+	createAlbum := func(name string) albumRecord {
+		t.Helper()
+		var album albumRecord
+		doJSON(t, client, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": name}, http.StatusCreated, &album)
+		return album
+	}
+	travel := createAlbum("旅行")
+	favorites := createAlbum("收藏")
+	archive := createAlbum("待合并")
+	doJSON(t, client, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": "旅行"}, http.StatusConflict, nil)
+
+	unassigned := uploadTestPNG(t, client, server.URL, "unassigned.png")
+	shared := uploadTestPNGToAlbums(t, client, server.URL, "shared.png", []int64{travel.ID, favorites.ID})
+	archived := uploadTestPNGToAlbums(t, client, server.URL, "archived.png", []int64{archive.ID})
+
+	type listingResponse struct {
+		Images     []imageRecord `json:"images"`
+		Total      int           `json:"total"`
+		Page       int           `json:"page"`
+		PageSize   int           `json:"pageSize"`
+		TotalPages int           `json:"totalPages"`
+	}
+	var pageTwo listingResponse
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images?page=2&pageSize=1", nil, http.StatusOK, &pageTwo)
+	if pageTwo.Total != 3 || pageTwo.Page != 2 || pageTwo.PageSize != 1 || pageTwo.TotalPages != 3 || len(pageTwo.Images) != 1 {
+		t.Fatalf("unexpected paginated listing: %#v", pageTwo)
+	}
+	var pngListing listingResponse
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images?format=png&pageSize=2", nil, http.StatusOK, &pngListing)
+	if pngListing.Total != 3 || len(pngListing.Images) != 2 || pngListing.TotalPages != 2 {
+		t.Fatalf("unexpected format-filtered listing: %#v", pngListing)
+	}
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images?format=tiff", nil, http.StatusBadRequest, nil)
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images?pageSize=201", nil, http.StatusBadRequest, nil)
+
+	var travelListing listingResponse
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images?album="+strconv.FormatInt(travel.ID, 10), nil, http.StatusOK, &travelListing)
+	if travelListing.Total != 1 || travelListing.Images[0].ID != shared.ID {
+		t.Fatalf("unexpected album-filtered listing: %#v", travelListing)
+	}
+	var unassignedListing listingResponse
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images?album=none", nil, http.StatusOK, &unassignedListing)
+	if unassignedListing.Total != 1 || unassignedListing.Images[0].ID != unassigned.ID {
+		t.Fatalf("unexpected unassigned-image listing: %#v", unassignedListing)
+	}
+	doJSON(t, client, http.MethodPost, server.URL+"/api/images/albums", map[string]any{
+		"imageIds": []int64{unassigned.ID}, "albumIds": []int64{travel.ID, archive.ID},
+	}, http.StatusNoContent, nil)
+	doJSON(t, client, http.MethodDelete, server.URL+"/api/images/albums", map[string]any{
+		"imageIds": []int64{shared.ID}, "albumIds": []int64{favorites.ID},
+	}, http.StatusNoContent, nil)
+
+	doJSON(t, client, http.MethodPost, server.URL+"/api/albums/merge", map[string]any{
+		"ids": []int64{travel.ID, favorites.ID, archive.ID}, "targetId": travel.ID,
+	}, http.StatusOK, nil)
+	var albumsPayload struct {
+		Albums []albumRecord `json:"albums"`
+		Total  int           `json:"total"`
+	}
+	doJSON(t, client, http.MethodGet, server.URL+"/api/albums", nil, http.StatusOK, &albumsPayload)
+	if albumsPayload.Total != 1 || len(albumsPayload.Albums) != 1 || albumsPayload.Albums[0].ID != travel.ID || albumsPayload.Albums[0].ImageCount != 3 {
+		t.Fatalf("albums were not merged as a relation union: %#v", albumsPayload)
+	}
+
+	doJSON(t, client, http.MethodDelete, server.URL+"/api/albums", map[string]any{"ids": []int64{travel.ID}}, http.StatusOK, nil)
+	var afterAlbumDelete listingResponse
+	doJSON(t, client, http.MethodGet, server.URL+"/api/images", nil, http.StatusOK, &afterAlbumDelete)
+	if afterAlbumDelete.Total != 3 {
+		t.Fatalf("deleting an album deleted image records: %#v", afterAlbumDelete)
+	}
+	for _, image := range []imageRecord{unassigned, shared, archived} {
+		response, err := client.Get(server.URL + image.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("image %d disappeared after album deletion: %d", image.ID, response.StatusCode)
+		}
+	}
+}
+
+func setupPayload() map[string]string {
+	return map[string]string{
+		"displayName": testAdminDisplayName, "username": testAdminUsername,
+		"password": testAdminPassword, "databaseType": "sqlite",
+	}
+}
+
+func setupTestAdministrator(t *testing.T, client *http.Client, serverURL string) {
+	t.Helper()
+	doJSON(t, client, http.MethodPost, serverURL+"/api/setup", setupPayload(), http.StatusCreated, nil)
+}
+
+func uploadTestPNG(t *testing.T, client *http.Client, serverURL, filename string) imageRecord {
+	t.Helper()
+	return uploadTestPNGToAlbums(t, client, serverURL, filename, nil)
+}
+
+func uploadTestPNGToAlbums(t *testing.T, client *http.Client, serverURL, filename string, albumIDs []int64) imageRecord {
+	t.Helper()
+	var multipartBody bytes.Buffer
+	writer := multipart.NewWriter(&multipartBody)
+	encodedAlbumIDs, err := json.Marshal(albumIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("albumIds", string(encodedAlbumIDs)); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("files", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(testPNGBytes(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/api/images", &multipartBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("upload status = %d, body = %s", response.StatusCode, body)
+	}
+	var payload struct {
+		Images []imageRecord `json:"images"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Images) != 1 || !strings.HasPrefix(payload.Images[0].URL, "/i/") {
+		t.Fatalf("unexpected upload response: %#v", payload)
+	}
+	return payload.Images[0]
+}
+
+type testUploadFile struct {
+	name string
+	data []byte
+}
+
+func uploadTestFiles(t *testing.T, client *http.Client, serverURL string, files []testUploadFile) (int, []byte) {
+	t.Helper()
+	var multipartBody bytes.Buffer
+	writer := multipart.NewWriter(&multipartBody)
+	for _, file := range files {
+		part, err := writer.CreateFormFile("files", file.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(file.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/api/images", &multipartBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, body
+}
+
+func testPNGBytes(t *testing.T) []byte {
+	t.Helper()
+	data, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func doJSON(t *testing.T, client *http.Client, method, url string, body any, expectedStatus int, destination any) {
@@ -362,4 +783,13 @@ func newCookieClient(t *testing.T) *http.Client {
 		t.Fatal(err)
 	}
 	return &http.Client{Jar: jar}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
 }

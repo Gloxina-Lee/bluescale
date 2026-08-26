@@ -3,7 +3,7 @@ import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AuthLayout from '../components/AuthLayout.vue'
 import { api } from '../api'
-import { defaultRouteName, session } from '../session'
+import { session } from '../session'
 
 const router = useRouter()
 const route = useRoute()
@@ -16,7 +16,7 @@ async function submit() {
   busy.value = true
   try {
     session.user = await api('/api/login', { method: 'POST', body: JSON.stringify(form) })
-    router.replace({ name: defaultRouteName(session.user) })
+    router.replace({ name: 'upload' })
   } catch (requestError) {
     error.value = requestError.message
   } finally {
@@ -30,7 +30,7 @@ async function submit() {
     <form class="auth-form login-form" @submit.prevent="submit">
       <div class="form-heading">
         <span class="step-pill">WELCOME BACK</span>
-        <h2>用户登录</h2>
+        <h2>管理员登录</h2>
         <p>{{ route.query.setup === 'done' ? '配置成功，现在使用管理员账号登录。' : '输入你的账号与密码继续。' }}</p>
       </div>
       <label class="field">

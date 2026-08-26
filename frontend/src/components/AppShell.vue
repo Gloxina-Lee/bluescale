@@ -1,9 +1,9 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BrandMark from './BrandMark.vue'
 import ProfileSettingsModal from './ProfileSettingsModal.vue'
-import { defaultRouteName, hasPermission, session, signOut } from '../session'
+import { session, signOut } from '../session'
 import { theme, toggleTheme } from '../theme'
 
 const router = useRouter()
@@ -15,7 +15,6 @@ const accountMenuOpen = ref(false)
 const profileSettingsOpen = ref(false)
 const accountArea = ref(null)
 let mobileQuery
-const homeRoute = computed(() => ({ name: defaultRouteName() }))
 
 function toggleSidebar() {
   collapsed.value = !collapsed.value
@@ -71,7 +70,7 @@ onBeforeUnmount(() => {
   <div class="app-shell" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="app-sidebar" :class="{ collapsed }">
       <div class="sidebar-brand-row">
-        <RouterLink class="brand" :to="homeRoute" aria-label="BlueScale 首页">
+        <RouterLink class="brand" to="/upload" aria-label="BlueScale 首页">
           <BrandMark />
           <span>BlueScale</span>
         </RouterLink>
@@ -87,17 +86,21 @@ onBeforeUnmount(() => {
       </div>
 
       <nav class="sidebar-nav" aria-label="主导航">
-        <RouterLink v-if="hasPermission('upload')" to="/upload" title="上传图片">
+        <RouterLink to="/upload" title="上传图片">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
           <span>上传图片</span>
         </RouterLink>
-        <RouterLink v-if="hasPermission('manageImages')" to="/images" title="图片管理">
+        <RouterLink to="/images" title="图片管理">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m4 17 5-4 3 2 3-3 5 4"/></svg>
           <span>图片管理</span>
         </RouterLink>
-        <RouterLink v-if="hasPermission('manageUsers')" to="/users" title="用户管理">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M17 8v6m-3-3h6"/></svg>
-          <span>用户管理</span>
+        <RouterLink to="/albums" title="相册管理">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2"/></svg>
+          <span>相册管理</span>
+        </RouterLink>
+        <RouterLink to="/settings" title="系统设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.04.08V21h-4v-.92l-.04-.08a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1L3.92 14H3v-4h.92L4 9.96a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.86-2.86.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6l.04-.08V3h4v.92l.04.08a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 9c.1.4.3.75.6 1l.08.04H21v4h-.92L20 14a1.7 1.7 0 0 0-.6 1Z"/></svg>
+          <span>系统设置</span>
         </RouterLink>
       </nav>
 
@@ -105,7 +108,7 @@ onBeforeUnmount(() => {
         <div v-if="accountMenuOpen" class="account-popover" role="menu">
           <button class="account-menu-item" type="button" @click="openProfileSettings">
             <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.04.08V21h-4v-.92l-.04-.08a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1L3.92 14H3v-4h.92L4 9.96a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.86-2.86.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6l.04-.08V3h4v.92l.04.08a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 9c.1.4.3.75.6 1l.08.04H21v4h-.92L20 14a1.7 1.7 0 0 0-.6 1Z"/></svg>
-            <span>设置</span>
+            <span>个人设置</span>
           </button>
           <button class="account-menu-item theme-menu-item" type="button" :aria-pressed="theme === 'dark'" @click="toggleTheme">
             <svg v-if="theme === 'light'" viewBox="0 0 24 24"><path d="M21 15.2A9 9 0 1 1 8.8 3a7 7 0 0 0 12.2 12.2Z"/></svg>
@@ -123,7 +126,7 @@ onBeforeUnmount(() => {
           <span class="avatar">{{ session.user?.displayName?.slice(0, 1) }}</span>
           <div>
             <strong>{{ session.user?.displayName }}</strong>
-            <span>{{ session.user?.group?.name }}</span>
+            <span>管理员</span>
           </div>
           <svg class="account-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
         </button>

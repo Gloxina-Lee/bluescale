@@ -1,6 +1,9 @@
 package app
 
-import "database/sql"
+import (
+	"database/sql"
+	"errors"
+)
 
 func initializeDatabase(db *sql.DB) error {
 	statements := []string{
@@ -14,30 +17,10 @@ func initializeDatabase(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS administrators (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			display_name TEXT NOT NULL,
-			username TEXT NOT NULL UNIQUE,
+			username TEXT NOT NULL UNIQUE COLLATE NOCASE,
 			password_hash TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		)`,
-		`CREATE TABLE IF NOT EXISTS user_groups (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-			system_key TEXT UNIQUE,
-			can_upload INTEGER NOT NULL DEFAULT 0 CHECK (can_upload IN (0, 1)),
-			can_manage_images INTEGER NOT NULL DEFAULT 0 CHECK (can_manage_images IN (0, 1)),
-			can_manage_users INTEGER NOT NULL DEFAULT 0 CHECK (can_manage_users IN (0, 1)),
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		)`,
-		`CREATE TABLE IF NOT EXISTS users (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			display_name TEXT NOT NULL,
-			username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-			password_hash TEXT NOT NULL,
-			group_id INTEGER NOT NULL REFERENCES user_groups(id) ON DELETE RESTRICT,
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_users_group_id ON users(group_id)`,
 		`CREATE TABLE IF NOT EXISTS images (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			original_name TEXT NOT NULL,
@@ -46,30 +29,176 @@ func initializeDatabase(db *sql.DB) error {
 			size INTEGER NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			return err
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO user_groups (name, system_key, can_upload, can_manage_images, can_manage_users)
-		VALUES ('Admin', 'admin', 1, 1, 1)
-		ON CONFLICT(system_key) DO NOTHING`); err != nil {
+	return migrateAdministratorFromMultiUser(db)
+}
+
+func migrateAdministratorFromMultiUser(db *sql.DB) error {
+	hasUsers, err := tableExists(db, "users")
+	if err != nil || !hasUsers {
 		return err
 	}
-	if _, err := db.Exec(`INSERT INTO user_groups (name, system_key, can_upload, can_manage_images, can_manage_users)
-		VALUES ('User', 'user', 1, 0, 0)
-		ON CONFLICT(system_key) DO NOTHING`); err != nil {
+	hasGroups, err := tableExists(db, "user_groups")
+	if err != nil {
 		return err
 	}
-	// Existing single-user installations are migrated without changing their credentials.
-	if _, err := db.Exec(`INSERT INTO users (display_name, username, password_hash, group_id, created_at, updated_at)
-		SELECT a.display_name, a.username, a.password_hash, g.id, a.created_at, a.created_at
-		FROM administrators a
-		JOIN user_groups g ON g.system_key = 'admin'
-		WHERE NOT EXISTS (SELECT 1 FROM users)`); err != nil {
+
+	var displayName, username, passwordHash, createdAt string
+	if hasGroups {
+		err = db.QueryRow(`SELECT u.display_name, u.username, u.password_hash, u.created_at
+			FROM users u LEFT JOIN user_groups g ON g.id = u.group_id
+			ORDER BY CASE
+				WHEN g.system_key = 'admin' THEN 0
+				WHEN g.can_manage_users = 1 THEN 1
+				ELSE 2
+			END, u.id
+			LIMIT 1`).Scan(&displayName, &username, &passwordHash, &createdAt)
+	} else {
+		err = db.QueryRow(`SELECT display_name, username, password_hash, created_at
+			FROM users ORDER BY id LIMIT 1`).Scan(&displayName, &username, &passwordHash, &createdAt)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	return nil
+	_, err = db.Exec(`INSERT INTO administrators (id, display_name, username, password_hash, created_at)
+		VALUES (1, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			display_name = excluded.display_name,
+			username = excluded.username,
+			password_hash = excluded.password_hash,
+			created_at = excluded.created_at`, displayName, username, passwordHash, createdAt)
+	return err
+}
+
+func finalizeSingleUserDatabase(db *sql.DB) (finalErr error) {
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		if _, err := db.Exec(`PRAGMA foreign_keys = ON`); finalErr == nil && err != nil {
+			finalErr = err
+		}
+	}()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	hasImageOwner, err := tableHasColumn(tx, "images", "user_id")
+	if err != nil {
+		return err
+	}
+	if hasImageOwner {
+		statements := []string{
+			`DROP INDEX IF EXISTS idx_images_user_id_created_at`,
+			`CREATE TABLE images_single_user (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				original_name TEXT NOT NULL,
+				storage_name TEXT NOT NULL UNIQUE,
+				mime_type TEXT NOT NULL,
+				size INTEGER NOT NULL,
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+			)`,
+			`INSERT INTO images_single_user (id, original_name, storage_name, mime_type, size, created_at)
+				SELECT id, original_name, storage_name, mime_type, size, created_at FROM images`,
+			`DROP TABLE images`,
+			`ALTER TABLE images_single_user RENAME TO images`,
+		}
+		for _, statement := range statements {
+			if _, err := tx.Exec(statement); err != nil {
+				return err
+			}
+		}
+	}
+
+	hasSessionOwner, err := tableHasColumn(tx, "sessions", "user_id")
+	if err != nil {
+		return err
+	}
+	if hasSessionOwner {
+		if _, err := tx.Exec(`DROP TABLE sessions`); err != nil {
+			return err
+		}
+	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS sessions (
+			token_hash TEXT PRIMARY KEY,
+			expires_at INTEGER NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC)`,
+		`DROP TABLE IF EXISTS users`,
+		`DROP TABLE IF EXISTS user_groups`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+type queryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func tableExists(db queryer, name string) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count)
+	return count > 0, err
+}
+
+func tableHasColumn(db interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}, table, column string) (bool, error) {
+	exists, err := tableExistsFromQuery(db, table)
+	if err != nil || !exists {
+		return false, err
+	}
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func tableExistsFromQuery(db interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}, name string) (bool, error) {
+	rows, err := db.Query(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return false, rows.Err()
+	}
+	var count int
+	if err := rows.Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, rows.Err()
 }
