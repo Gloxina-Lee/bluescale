@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AlbumPickerModal from '../components/AlbumPickerModal.vue'
+import ErrorToast from '../components/ErrorToast.vue'
 import { api, uploadWithProgress } from '../api'
 
 const router = useRouter()
@@ -16,6 +17,9 @@ const uploadSettings = ref({ maxImageSizeMB: 25, maxImagesPerUpload: 50 })
 const albums = ref([])
 const selectedAlbumIDs = ref([])
 const albumPickerOpen = ref(false)
+const isPublic = ref(false)
+const uploadSettingsOpen = ref(false)
+const uploadSettingsArea = ref(null)
 
 const totalSize = computed(() => items.value.reduce((sum, item) => sum + item.file.size, 0))
 
@@ -53,6 +57,7 @@ async function loadUploadSettings() {
     }
   } catch (requestError) {
     if (requestError.status === 401) router.push({ name: 'login' })
+    else error.value = requestError.message
   }
 }
 
@@ -77,10 +82,12 @@ async function startUpload() {
   progress.value = 0
   uploading.value = true
   try {
-    const payload = await uploadWithProgress(items.value.map((item) => item.file), (value) => { progress.value = value }, selectedAlbumIDs.value)
+    const payload = await uploadWithProgress(items.value.map((item) => item.file), (value) => { progress.value = value }, selectedAlbumIDs.value, isPublic.value)
     successCount.value = payload.images.length
     clearItems()
     selectedAlbumIDs.value = []
+    isPublic.value = false
+    uploadSettingsOpen.value = false
     progress.value = 100
   } catch (requestError) {
     error.value = requestError.message
@@ -90,17 +97,39 @@ async function startUpload() {
   }
 }
 
+function openAlbumPicker() {
+  uploadSettingsOpen.value = false
+  albumPickerOpen.value = true
+}
+
+function handleSettingsPointerDown(event) {
+  if (uploadSettingsOpen.value && !uploadSettingsArea.value?.contains(event.target)) uploadSettingsOpen.value = false
+}
+
+function handleSettingsKeydown(event) {
+  if (event.key === 'Escape') uploadSettingsOpen.value = false
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-onMounted(loadUploadSettings)
-onBeforeUnmount(clearItems)
+onMounted(() => {
+  document.addEventListener('pointerdown', handleSettingsPointerDown)
+  window.addEventListener('keydown', handleSettingsKeydown)
+  loadUploadSettings()
+})
+onBeforeUnmount(() => {
+  clearItems()
+  document.removeEventListener('pointerdown', handleSettingsPointerDown)
+  window.removeEventListener('keydown', handleSettingsKeydown)
+})
 </script>
 
 <template>
   <section class="content-page upload-page">
+    <ErrorToast :message="error" @close="error = ''" />
     <div class="page-heading">
       <div>
         <span class="eyebrow">UPLOAD STUDIO</span>
@@ -132,10 +161,23 @@ onBeforeUnmount(clearItems)
             <button class="secondary-button compact" type="button" :disabled="uploading || items.length >= uploadSettings.maxImagesPerUpload" @click="input.click()">继续添加</button>
             <button class="ghost-button compact" :class="{ 'danger-clear-button': items.length }" type="button" :disabled="!items.length || uploading" @click="clearItems">清空</button>
           </div>
-          <button class="secondary-button compact album-upload-button" type="button" :disabled="uploading || !albums.length" @click="albumPickerOpen = true">
-            <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M12 12v5m-2.5-2.5h5"/></svg>
-            {{ selectedAlbumIDs.length ? `上传到相册 · 已选 ${selectedAlbumIDs.length} 个` : '上传到相册' }}
-          </button>
+          <div ref="uploadSettingsArea" class="upload-settings-menu">
+            <button class="secondary-button compact upload-settings-trigger" type="button" :disabled="uploading" :aria-expanded="uploadSettingsOpen" @click="uploadSettingsOpen = !uploadSettingsOpen">
+              <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.04.08V21h-4v-.92l-.04-.08a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1L3.92 14H3v-4h.92L4 9.96a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.86-2.86.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6l.04-.08V3h4v.92l.04.08a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 9c.1.4.3.75.6 1l.08.04H21v4h-.92L20 14a1.7 1.7 0 0 0-.6 1Z"/></svg>
+              上传设置<span v-if="selectedAlbumIDs.length" class="settings-count">{{ selectedAlbumIDs.length }}</span><svg class="menu-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+            </button>
+            <div v-if="uploadSettingsOpen" class="upload-settings-popover">
+              <button class="upload-visibility-control" type="button" :disabled="uploading" @click="isPublic = !isPublic">
+                <span class="upload-setting-icon"><svg v-if="isPublic" viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg><svg v-else viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+                <span><strong>{{ isPublic ? '公开图片' : '私密图片' }}</strong><small>{{ isPublic ? '访客可查看并复制链接' : '仅登录或使用 Token 后可查看' }}</small></span>
+                <span class="upload-setting-state">点击切换</span>
+              </button>
+              <button class="secondary-button compact album-upload-button" type="button" :disabled="uploading || !albums.length" @click="openAlbumPicker">
+                <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M12 12v5m-2.5-2.5h5"/></svg>
+                {{ selectedAlbumIDs.length ? `上传到相册 · 已选 ${selectedAlbumIDs.length} 个` : '上传到相册' }}
+              </button>
+            </div>
+          </div>
           <button class="primary-button sidebar-upload-button" type="button" :disabled="!items.length || uploading" @click="startUpload">
             <svg v-if="!uploading" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg>
             <span>{{ uploading ? `正在上传 ${progress}%` : '开始上传' }}</span>
@@ -183,7 +225,6 @@ onBeforeUnmount(clearItems)
     </div>
 
     <div v-if="uploading" class="progress-track"><i :style="{ width: `${progress}%` }"></i></div>
-    <p v-if="error" class="inline-message error" role="alert">{{ error }}</p>
     <div v-if="successCount" class="inline-message success">
       <span>✓</span> 已成功上传 {{ successCount }} 张图片
       <RouterLink to="/images">前往图片管理</RouterLink>

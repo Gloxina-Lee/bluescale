@@ -102,32 +102,55 @@ func currentAdministrator(r *http.Request) (administrator, bool) {
 	return account, ok
 }
 
+func bearerToken(r *http.Request) string {
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return parts[1]
+}
+
+func (a *App) authenticateRequest(r *http.Request) (administrator, bool, error) {
+	if token := bearerToken(r); token != "" {
+		valid, err := a.authenticateAPIToken(token)
+		if err != nil {
+			return administrator{}, false, err
+		}
+		if valid {
+			account, err := a.loadAdministrator()
+			if errors.Is(err, sql.ErrNoRows) {
+				return administrator{}, false, nil
+			}
+			return account, err == nil, err
+		}
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return administrator{}, false, nil
+	}
+	valid, err := a.sessions.get(cookie.Value)
+	if err != nil || !valid {
+		return administrator{}, false, err
+	}
+	account, err := a.loadAdministrator()
+	if errors.Is(err, sql.ErrNoRows) {
+		return administrator{}, false, nil
+	}
+	return account, err == nil, err
+}
+
 func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(sessionCookieName)
+		account, valid, err := a.authenticateRequest(r)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
-		valid, err := a.sessions.get(cookie.Value)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法读取登录会话")
+			writeError(w, http.StatusInternalServerError, "无法验证身份凭据")
 			return
 		}
 		if !valid {
-			clearSessionCookie(w, a.requestIsHTTPS(r))
-			writeError(w, http.StatusUnauthorized, "登录已过期，请重新登录")
-			return
-		}
-		account, err := a.loadAdministrator()
-		if errors.Is(err, sql.ErrNoRows) {
-			a.sessions.delete(cookie.Value)
-			clearSessionCookie(w, a.requestIsHTTPS(r))
-			writeError(w, http.StatusUnauthorized, "管理员账号不可用，请重新配置")
-			return
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法读取管理员账号")
+			if _, cookieErr := r.Cookie(sessionCookieName); cookieErr == nil {
+				clearSessionCookie(w, a.requestIsHTTPS(r))
+			}
+			writeError(w, http.StatusUnauthorized, "请登录或提供有效的 API Token")
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), administratorContextKey{}, account)))

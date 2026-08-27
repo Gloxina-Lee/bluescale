@@ -302,7 +302,7 @@ func TestProtectedRoutesRequireLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = application.Close() })
-	for _, path := range []string{"/api/me", "/api/images", "/api/settings", "/api/albums"} {
+	for _, path := range []string{"/api/me", "/api/settings", "/api/tokens"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		recorder := httptest.NewRecorder()
 		application.Handler().ServeHTTP(recorder, request)
@@ -310,6 +310,205 @@ func TestProtectedRoutesRequireLogin(t *testing.T) {
 			t.Fatalf("GET %s status = %d, want 401", path, recorder.Code)
 		}
 	}
+	for _, path := range []string{"/api/images", "/api/albums"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("anonymous GET %s status = %d, want 200", path, recorder.Code)
+		}
+	}
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodPost, "/api/images", nil),
+		httptest.NewRequest(http.MethodDelete, "/api/images", nil),
+		httptest.NewRequest(http.MethodPut, "/api/images/visibility", nil),
+		httptest.NewRequest(http.MethodPost, "/api/albums", nil),
+	} {
+		recorder := httptest.NewRecorder()
+		application.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("anonymous %s %s status = %d, want 401", request.Method, request.URL.Path, recorder.Code)
+		}
+	}
+}
+
+func TestAnonymousReadsOnlyPublicImages(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	adminClient := newCookieClient(t)
+	setupTestAdministrator(t, adminClient, server.URL)
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+
+	var album albumRecord
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": "公开相册"}, http.StatusCreated, &album)
+	privateImage := uploadTestPNGToAlbums(t, adminClient, server.URL, "private.png", []int64{album.ID})
+	if privateImage.IsPublic {
+		t.Fatal("new uploads must be private by default")
+	}
+
+	publicClient := &http.Client{}
+	type imageListing struct {
+		Images []imageRecord `json:"images"`
+		Total  int           `json:"total"`
+	}
+	var anonymousImages imageListing
+	doJSON(t, publicClient, http.MethodGet, server.URL+"/api/images", nil, http.StatusOK, &anonymousImages)
+	if anonymousImages.Total != 0 || len(anonymousImages.Images) != 0 {
+		t.Fatalf("private image leaked into anonymous listing: %#v", anonymousImages)
+	}
+	var anonymousAlbums struct {
+		Albums []albumRecord `json:"albums"`
+	}
+	doJSON(t, publicClient, http.MethodGet, server.URL+"/api/albums", nil, http.StatusOK, &anonymousAlbums)
+	if len(anonymousAlbums.Albums) != 1 || anonymousAlbums.Albums[0].ImageCount != 0 {
+		t.Fatalf("anonymous album count included private images: %#v", anonymousAlbums)
+	}
+	privateResponse, err := publicClient.Get(server.URL + privateImage.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateResponse.Body.Close()
+	if privateResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("anonymous private image status = %d, want 404", privateResponse.StatusCode)
+	}
+
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/images/visibility", map[string]any{
+		"ids": []int64{privateImage.ID}, "isPublic": true,
+	}, http.StatusOK, nil)
+	doJSON(t, publicClient, http.MethodGet, server.URL+"/api/images", nil, http.StatusOK, &anonymousImages)
+	if anonymousImages.Total != 1 || len(anonymousImages.Images) != 1 || !anonymousImages.Images[0].IsPublic {
+		t.Fatalf("public image missing from anonymous listing: %#v", anonymousImages)
+	}
+	doJSON(t, publicClient, http.MethodGet, server.URL+"/api/albums", nil, http.StatusOK, &anonymousAlbums)
+	if anonymousAlbums.Albums[0].ImageCount != 1 {
+		t.Fatalf("anonymous public album count = %d, want 1", anonymousAlbums.Albums[0].ImageCount)
+	}
+	publicResponse, err := publicClient.Get(server.URL + privateImage.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicResponse.Body.Close()
+	if publicResponse.StatusCode != http.StatusOK || publicResponse.Header.Get("Cache-Control") != "public, max-age=0, must-revalidate" {
+		t.Fatalf("public image response status=%d cache=%q", publicResponse.StatusCode, publicResponse.Header.Get("Cache-Control"))
+	}
+
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/images/visibility", map[string]any{
+		"ids": []int64{privateImage.ID}, "isPublic": false,
+	}, http.StatusOK, nil)
+	revokedResponse, err := publicClient.Get(server.URL + privateImage.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedResponse.Body.Close()
+	if revokedResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("image remained anonymous after becoming private: %d", revokedResponse.StatusCode)
+	}
+}
+
+func TestAPITokenLifecycleAndAuthorization(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	adminClient := newCookieClient(t)
+	setupTestAdministrator(t, adminClient, server.URL)
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+
+	type createdToken struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Token string `json:"token"`
+	}
+	var first, second createdToken
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/tokens", map[string]string{"name": "自动上传"}, http.StatusCreated, &first)
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/tokens", map[string]string{"name": "备用"}, http.StatusCreated, &second)
+	if !strings.HasPrefix(first.Token, apiTokenMarker) || first.Token == second.Token {
+		t.Fatalf("unexpected generated tokens: %#v %#v", first, second)
+	}
+	var storedHash string
+	if err := application.db.QueryRow(`SELECT token_hash FROM api_tokens WHERE id = ?`, first.ID).Scan(&storedHash); err != nil {
+		t.Fatal(err)
+	}
+	if storedHash == first.Token || storedHash != hashSessionToken(first.Token) {
+		t.Fatal("API token was not stored as the expected digest")
+	}
+
+	var createdAlbum albumRecord
+	doJSONWithBearer(t, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": "Token 创建"}, first.Token, http.StatusCreated, &createdAlbum)
+	privateImage := uploadTestPNGWithBearer(t, server.URL, "token-private.png", first.Token)
+	deletedImage := uploadTestPNGWithBearer(t, server.URL, "token-delete.png", first.Token)
+	doJSONWithBearer(t, http.MethodDelete, server.URL+"/api/images", map[string]any{"ids": []int64{deletedImage.ID}}, first.Token, http.StatusNoContent, nil)
+	deletedResponse, err := http.Get(server.URL + deletedImage.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletedResponse.Body.Close()
+	if deletedResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("token-authenticated delete did not remove image: %d", deletedResponse.StatusCode)
+	}
+	privateRequest, err := http.NewRequest(http.MethodGet, server.URL+privateImage.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateRequest.Header.Set("Authorization", "Bearer "+first.Token)
+	privateResponse, err := http.DefaultClient.Do(privateRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateResponse.Body.Close()
+	if privateResponse.StatusCode != http.StatusOK || privateResponse.Header.Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("token private image status=%d cache=%q", privateResponse.StatusCode, privateResponse.Header.Get("Cache-Control"))
+	}
+
+	var detail apiTokenRecord
+	doJSON(t, adminClient, http.MethodGet, server.URL+"/api/tokens/"+strconv.FormatInt(first.ID, 10), nil, http.StatusOK, &detail)
+	if detail.LastUsedAt == nil || detail.CreatedAt == "" {
+		t.Fatalf("token detail did not track timestamps: %#v", detail)
+	}
+	var tokenList struct {
+		Tokens []apiTokenRecord `json:"tokens"`
+		Total  int              `json:"total"`
+	}
+	doJSON(t, adminClient, http.MethodGet, server.URL+"/api/tokens", nil, http.StatusOK, &tokenList)
+	if tokenList.Total != 2 || len(tokenList.Tokens) != 2 {
+		t.Fatalf("unexpected API token list: %#v", tokenList)
+	}
+
+	doJSON(t, adminClient, http.MethodDelete, server.URL+"/api/tokens", map[string]any{"ids": []int64{first.ID, second.ID}}, http.StatusOK, nil)
+	doJSONWithBearer(t, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": "应失败"}, first.Token, http.StatusUnauthorized, nil)
+	revokedRequest, err := http.NewRequest(http.MethodGet, server.URL+privateImage.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedRequest.Header.Set("Authorization", "Bearer "+first.Token)
+	revokedResponse, err := http.DefaultClient.Do(revokedRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedResponse.Body.Close()
+	if revokedResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("revoked token still read a private image: %d", revokedResponse.StatusCode)
+	}
+	var publicListing map[string]any
+	doJSONWithBearer(t, http.MethodGet, server.URL+"/api/images", nil, first.Token, http.StatusOK, &publicListing)
 }
 
 func TestUpdateAdministratorProfile(t *testing.T) {
@@ -650,6 +849,15 @@ func uploadTestPNG(t *testing.T, client *http.Client, serverURL, filename string
 }
 
 func uploadTestPNGToAlbums(t *testing.T, client *http.Client, serverURL, filename string, albumIDs []int64) imageRecord {
+	return uploadTestPNGWithCredential(t, client, serverURL, filename, albumIDs, "")
+}
+
+func uploadTestPNGWithBearer(t *testing.T, serverURL, filename, token string) imageRecord {
+	t.Helper()
+	return uploadTestPNGWithCredential(t, http.DefaultClient, serverURL, filename, nil, token)
+}
+
+func uploadTestPNGWithCredential(t *testing.T, client *http.Client, serverURL, filename string, albumIDs []int64, token string) imageRecord {
 	t.Helper()
 	var multipartBody bytes.Buffer
 	writer := multipart.NewWriter(&multipartBody)
@@ -675,6 +883,9 @@ func uploadTestPNGToAlbums(t *testing.T, client *http.Client, serverURL, filenam
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -761,6 +972,40 @@ func doJSON(t *testing.T, client *http.Client, method, url string, body any, exp
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != expectedStatus {
+		responseBody, _ := io.ReadAll(response.Body)
+		t.Fatalf("%s %s status = %d, want %d; body = %s", method, url, response.StatusCode, expectedStatus, responseBody)
+	}
+	if destination != nil {
+		if err := json.NewDecoder(response.Body).Decode(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func doJSONWithBearer(t *testing.T, method, url string, body any, token string, expectedStatus int, destination any) {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

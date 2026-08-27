@@ -6,6 +6,8 @@ import UploadView from './views/UploadView.vue'
 import ImagesView from './views/ImagesView.vue'
 import AlbumsView from './views/AlbumsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import APIView from './views/APIView.vue'
+import APIDocsView from './views/APIDocsView.vue'
 import { loadStatus, loadUser, session } from './session'
 
 const router = createRouter({
@@ -16,13 +18,14 @@ const router = createRouter({
     {
       path: '/',
       component: AppShell,
-      meta: { auth: true },
       children: [
-        { path: '', redirect: '/upload' },
-        { path: 'upload', name: 'upload', component: UploadView },
+        { path: '', redirect: '/images' },
+        { path: 'upload', name: 'upload', component: UploadView, meta: { auth: true } },
         { path: 'images', name: 'images', component: ImagesView },
         { path: 'albums', name: 'albums', component: AlbumsView },
-        { path: 'settings', name: 'settings', component: SettingsView },
+        { path: 'api', name: 'api', component: APIView, meta: { auth: true } },
+        { path: 'docs', name: 'api-docs', component: APIDocsView },
+        { path: 'settings', name: 'settings', component: SettingsView, meta: { auth: true } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -38,7 +41,9 @@ router.beforeEach(async (to) => {
     await loadUser()
     if (to.name === 'setup') return session.user ? { name: 'upload' } : { name: 'login' }
     if (to.name === 'login' && session.user) return { name: 'upload' }
-    if (to.matched.some((route) => route.meta.auth) && !session.user) return { name: 'login' }
+    if (to.matched.some((route) => route.meta.auth) && !session.user) {
+      return { name: 'login', query: { redirect: to.fullPath } }
+    }
     return true
   } catch {
     return true

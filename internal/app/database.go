@@ -27,6 +27,7 @@ func initializeDatabase(db *sql.DB) error {
 			storage_name TEXT NOT NULL UNIQUE,
 			mime_type TEXT NOT NULL,
 			size INTEGER NOT NULL,
+			is_public INTEGER NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1)),
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		)`,
 	}
@@ -107,10 +108,11 @@ func finalizeSingleUserDatabase(db *sql.DB) (finalErr error) {
 				storage_name TEXT NOT NULL UNIQUE,
 				mime_type TEXT NOT NULL,
 				size INTEGER NOT NULL,
+				is_public INTEGER NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1)),
 				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 			)`,
-			`INSERT INTO images_single_user (id, original_name, storage_name, mime_type, size, created_at)
-				SELECT id, original_name, storage_name, mime_type, size, created_at FROM images`,
+			`INSERT INTO images_single_user (id, original_name, storage_name, mime_type, size, is_public, created_at)
+				SELECT id, original_name, storage_name, mime_type, size, 0, created_at FROM images`,
 			`DROP TABLE images`,
 			`ALTER TABLE images_single_user RENAME TO images`,
 		}
@@ -147,6 +149,20 @@ func finalizeSingleUserDatabase(db *sql.DB) (finalErr error) {
 		}
 	}
 	return tx.Commit()
+}
+
+func initializeImageVisibilityDatabase(db *sql.DB) error {
+	hasVisibility, err := tableHasColumn(db, "images", "is_public")
+	if err != nil {
+		return err
+	}
+	if !hasVisibility {
+		if _, err := db.Exec(`ALTER TABLE images ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1))`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_images_public_created_at ON images(is_public, created_at DESC, id DESC)`)
+	return err
 }
 
 type queryer interface {

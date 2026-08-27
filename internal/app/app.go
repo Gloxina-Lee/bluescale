@@ -62,7 +62,15 @@ func New(config Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := initializeImageVisibilityDatabase(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := initializeAlbumDatabase(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := initializeAPITokenDatabase(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -97,15 +105,20 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/me", a.requireAuth(a.handleUpdateMe))
 	mux.HandleFunc("GET /api/settings", a.requireAuth(a.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", a.requireAuth(a.handleUpdateSettings))
-	mux.HandleFunc("GET /api/albums", a.requireAuth(a.handleListAlbums))
+	mux.HandleFunc("GET /api/albums", a.handleListAlbums)
 	mux.HandleFunc("POST /api/albums", a.requireAuth(a.handleCreateAlbum))
 	mux.HandleFunc("DELETE /api/albums", a.requireAuth(a.handleDeleteAlbums))
 	mux.HandleFunc("POST /api/albums/merge", a.requireAuth(a.handleMergeAlbums))
-	mux.HandleFunc("GET /api/images", a.requireAuth(a.handleListImages))
+	mux.HandleFunc("GET /api/images", a.handleListImages)
 	mux.HandleFunc("POST /api/images", a.requireAuth(a.handleUploadImages))
 	mux.HandleFunc("DELETE /api/images", a.requireAuth(a.handleDeleteImages))
+	mux.HandleFunc("PUT /api/images/visibility", a.requireAuth(a.handleUpdateImageVisibility))
 	mux.HandleFunc("POST /api/images/albums", a.requireAuth(a.handleAddImagesToAlbums))
 	mux.HandleFunc("DELETE /api/images/albums", a.requireAuth(a.handleRemoveImagesFromAlbums))
+	mux.HandleFunc("GET /api/tokens", a.requireAuth(a.handleListAPITokens))
+	mux.HandleFunc("POST /api/tokens", a.requireAuth(a.handleCreateAPIToken))
+	mux.HandleFunc("DELETE /api/tokens", a.requireAuth(a.handleDeleteAPITokens))
+	mux.HandleFunc("GET /api/tokens/{id}", a.requireAuth(a.handleGetAPIToken))
 	mux.HandleFunc("GET /i/{name}", a.handleServeImage)
 	mux.HandleFunc("/", a.handleFrontend)
 

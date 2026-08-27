@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import ErrorToast from '../components/ErrorToast.vue'
 
 const router = useRouter()
 const activeTab = ref('upload')
@@ -48,6 +49,7 @@ onMounted(loadSettings)
 
 <template>
   <section class="content-page settings-page">
+    <ErrorToast :message="error" @close="error = ''" />
     <div class="page-heading settings-heading">
       <div>
         <span class="eyebrow">SYSTEM PREFERENCES</span>
@@ -145,10 +147,8 @@ onMounted(loadSettings)
             </div>
           </template>
 
-          <p v-if="error" class="inline-message error" role="alert">{{ error }}</p>
           <p v-if="saved" class="inline-message success"><span>✓</span>设置已保存并立即生效</p>
         </form>
-        <p v-else-if="error" class="inline-message error" role="alert">{{ error }}</p>
       </div>
     </div>
   </section>

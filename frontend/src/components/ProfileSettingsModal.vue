@@ -2,6 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { session } from '../session'
+import ErrorToast from './ErrorToast.vue'
 
 const emit = defineEmits(['close'])
 const form = reactive({ displayName: '', username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
@@ -69,6 +70,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 <template>
   <Teleport to="body">
+    <ErrorToast :message="error" @close="error = ''" />
     <div class="modal-layer profile-settings-layer" @mousedown.self="close">
       <section class="management-modal profile-settings-modal" role="dialog" aria-modal="true" aria-labelledby="profile-settings-title">
         <header>
@@ -108,7 +110,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             <label class="field"><span>确认新密码</span><input v-model="form.confirmPassword" :required="Boolean(form.newPassword)" minlength="8" maxlength="128" type="password" autocomplete="new-password" placeholder="再次输入新密码" /></label>
           </div>
 
-          <p v-if="error" class="inline-message error" role="alert">{{ error }}</p>
           <p v-if="success" class="inline-message success" role="status"><span>✓</span>{{ success }}</p>
           <footer>
             <button class="secondary-button" type="button" :disabled="saving" @click="close">取消</button>

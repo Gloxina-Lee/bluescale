@@ -2,6 +2,7 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AuthLayout from '../components/AuthLayout.vue'
+import ErrorToast from '../components/ErrorToast.vue'
 import { api } from '../api'
 import { loadStatus } from '../session'
 
@@ -45,6 +46,7 @@ async function submit() {
 
 <template>
   <AuthLayout eyebrow="首次运行" title="欢迎，先完成初始化" description="创建唯一的管理员账号，并准备好本地图片存储。全部数据都保留在你的设备上。">
+    <ErrorToast :message="error" @close="error = ''" />
     <form class="auth-form" @submit.prevent="submit">
       <div class="form-heading">
         <span class="step-pill">01 / 01</span>
@@ -80,7 +82,6 @@ async function submit() {
         <small>当前版本仅支持 SQLite，无需额外安装数据库。</small>
       </label>
 
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <button class="primary-button" type="submit" :disabled="busy">
         <span>{{ busy ? '正在配置…' : '完成配置' }}</span>
         <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>

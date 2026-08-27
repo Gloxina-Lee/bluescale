@@ -2,6 +2,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AuthLayout from '../components/AuthLayout.vue'
+import ErrorToast from '../components/ErrorToast.vue'
 import { api } from '../api'
 import { session } from '../session'
 
@@ -16,7 +17,10 @@ async function submit() {
   busy.value = true
   try {
     session.user = await api('/api/login', { method: 'POST', body: JSON.stringify(form) })
-    router.replace({ name: 'upload' })
+    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') && !route.query.redirect.startsWith('//')
+      ? route.query.redirect
+      : '/upload'
+    router.replace(redirect)
   } catch (requestError) {
     error.value = requestError.message
   } finally {
@@ -27,6 +31,7 @@ async function submit() {
 
 <template>
   <AuthLayout eyebrow="私人图床" title="让图片归你掌控" description="一个克制、快速的私人图片空间。上传、管理和分享，不经过第三方。">
+    <ErrorToast :message="error" @close="error = ''" />
     <form class="auth-form login-form" @submit.prevent="submit">
       <div class="form-heading">
         <span class="step-pill">WELCOME BACK</span>
@@ -41,11 +46,11 @@ async function submit() {
         <span>登录密码</span>
         <input v-model="form.password" required type="password" autocomplete="current-password" placeholder="输入登录密码" />
       </label>
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <button class="primary-button" type="submit" :disabled="busy">
         <span>{{ busy ? '正在登录…' : '登录' }}</span>
         <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
       </button>
+      <RouterLink class="auth-public-link" to="/images">暂不登录，浏览公开图片</RouterLink>
     </form>
   </AuthLayout>
 </template>

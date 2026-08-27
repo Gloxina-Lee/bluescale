@@ -45,7 +45,7 @@ onBeforeUnmount(() => {
     <figure v-if="image" class="image-preview-figure">
       <div class="preview-image-stage"><img :src="image.url" :alt="image.originalName" /></div>
       <figcaption>
-        <div><strong>{{ image.originalName }}</strong><span>{{ image.mimeType }} · {{ formatBytes(image.size) }} · {{ formatDate(image.createdAt) }}</span></div>
+        <div><strong>{{ image.originalName }}</strong><span>{{ image.mimeType }} · {{ formatBytes(image.size) }} · {{ formatDate(image.createdAt) }} · {{ image.isPublic ? '公开' : '私密' }}</span></div>
         <span class="preview-position">{{ index + 1 }} / {{ images.length }}</span>
         <button class="secondary-button compact" type="button" @click="emit('copy', image)">复制链接</button>
         <a class="secondary-button compact" :href="image.url" target="_blank" rel="noreferrer">打开原图</a>

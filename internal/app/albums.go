@@ -39,9 +39,19 @@ func initializeAlbumDatabase(db *sql.DB) error {
 	return nil
 }
 
-func (a *App) handleListAlbums(w http.ResponseWriter, _ *http.Request) {
-	rows, err := a.db.Query(`SELECT a.id, a.name, a.created_at, COUNT(ia.image_id)
+func (a *App) handleListAlbums(w http.ResponseWriter, r *http.Request) {
+	_, authenticated, authErr := a.authenticateRequest(r)
+	if authErr != nil {
+		writeError(w, http.StatusInternalServerError, "无法验证身份凭据")
+		return
+	}
+	countExpression := "COUNT(ia.image_id)"
+	if !authenticated {
+		countExpression = "COUNT(CASE WHEN i.is_public = 1 THEN ia.image_id END)"
+	}
+	rows, err := a.db.Query(`SELECT a.id, a.name, a.created_at, ` + countExpression + `
 		FROM albums a LEFT JOIN image_albums ia ON ia.album_id = a.id
+		LEFT JOIN images i ON i.id = ia.image_id
 		GROUP BY a.id ORDER BY a.created_at DESC, a.id DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "无法读取相册列表")

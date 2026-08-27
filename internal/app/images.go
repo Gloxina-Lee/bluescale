@@ -37,6 +37,7 @@ type imageRecord struct {
 	StorageName  string `json:"storageName"`
 	MimeType     string `json:"mimeType"`
 	Size         int64  `json:"size"`
+	IsPublic     bool   `json:"isPublic"`
 	CreatedAt    string `json:"createdAt"`
 	URL          string `json:"url"`
 }
@@ -132,6 +133,11 @@ func validStorageName(name string) bool {
 }
 
 func (a *App) handleListImages(w http.ResponseWriter, r *http.Request) {
+	_, authenticated, authErr := a.authenticateRequest(r)
+	if authErr != nil {
+		writeError(w, http.StatusInternalServerError, "无法验证身份凭据")
+		return
+	}
 	page, err := positiveQueryInteger(r, "page", 1, 1, 1_000_000)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "页码无效")
@@ -142,8 +148,23 @@ func (a *App) handleListImages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "每页图片数量应为 1–200")
 		return
 	}
-	conditions := make([]string, 0, 2)
-	arguments := make([]any, 0, 2)
+	conditions := make([]string, 0, 3)
+	arguments := make([]any, 0, 3)
+	if !authenticated {
+		conditions = append(conditions, "i.is_public = 1")
+	}
+	visibility := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("visibility")))
+	if visibility != "" && visibility != "all" {
+		if visibility != "public" && visibility != "private" {
+			writeError(w, http.StatusBadRequest, "图片可见范围筛选条件无效")
+			return
+		}
+		if visibility == "public" {
+			conditions = append(conditions, "i.is_public = 1")
+		} else {
+			conditions = append(conditions, "i.is_public = 0")
+		}
+	}
 	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 	if format != "" && format != "all" {
 		mimeType, ok := imageFormatMIMEs[format]
@@ -185,7 +206,7 @@ func (a *App) handleListImages(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 	queryArguments := append(append([]any(nil), arguments...), pageSize, (page-1)*pageSize)
-	rows, err := a.db.Query(`SELECT i.id, i.original_name, i.storage_name, i.mime_type, i.size, i.created_at
+	rows, err := a.db.Query(`SELECT i.id, i.original_name, i.storage_name, i.mime_type, i.size, i.is_public, i.created_at
 		FROM images i`+where+` ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?`, queryArguments...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "无法读取图片列表")
@@ -195,7 +216,7 @@ func (a *App) handleListImages(w http.ResponseWriter, r *http.Request) {
 	images := make([]imageRecord, 0)
 	for rows.Next() {
 		var image imageRecord
-		if err := rows.Scan(&image.ID, &image.OriginalName, &image.StorageName, &image.MimeType, &image.Size, &image.CreatedAt); err != nil {
+		if err := rows.Scan(&image.ID, &image.OriginalName, &image.StorageName, &image.MimeType, &image.Size, &image.IsPublic, &image.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "无法读取图片信息")
 			return
 		}
@@ -245,6 +266,14 @@ func (a *App) handleUploadImages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	isPublic := false
+	if value := strings.TrimSpace(r.FormValue("isPublic")); value != "" {
+		if value != "true" && value != "false" {
+			writeError(w, http.StatusBadRequest, "图片公开属性无效")
+			return
+		}
+		isPublic = value == "true"
+	}
 
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -262,7 +291,7 @@ func (a *App) handleUploadImages(w http.ResponseWriter, r *http.Request) {
 	uploaded := make([]imageRecord, 0, len(files))
 	uploadedIDs := make([]int64, 0, len(files))
 	for _, header := range files {
-		image, path, err := a.storeUpload(tx, header, settings)
+		image, path, err := a.storeUpload(tx, header, settings, isPublic)
 		if err != nil {
 			cleanup()
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -309,7 +338,7 @@ func parseUploadAlbumIDs(encoded string) ([]int64, error) {
 	return normalized, nil
 }
 
-func (a *App) storeUpload(tx *sql.Tx, header *multipart.FileHeader, settings uploadSettings) (imageRecord, string, error) {
+func (a *App) storeUpload(tx *sql.Tx, header *multipart.FileHeader, settings uploadSettings, isPublic bool) (imageRecord, string, error) {
 	displayName := cleanOriginalName(header.Filename, ".img")
 	if header.Size > settings.maxImageBytes() {
 		return imageRecord{}, "", fmt.Errorf("%s 超过 %d MB 限制", displayName, settings.MaxImageSizeMB)
@@ -383,7 +412,7 @@ func (a *App) storeUpload(tx *sql.Tx, header *multipart.FileHeader, settings upl
 		return imageRecord{}, "", errors.New("无法保存图片")
 	}
 
-	result, err := tx.Exec(`INSERT INTO images (original_name, storage_name, mime_type, size) VALUES (?, ?, ?, ?)`, displayName, storageName, mimeType, info.Size())
+	result, err := tx.Exec(`INSERT INTO images (original_name, storage_name, mime_type, size, is_public) VALUES (?, ?, ?, ?, ?)`, displayName, storageName, mimeType, info.Size(), isPublic)
 	if err != nil {
 		_ = os.Remove(finalPath)
 		return imageRecord{}, "", errors.New("无法保存图片记录")
@@ -398,7 +427,7 @@ func (a *App) storeUpload(tx *sql.Tx, header *multipart.FileHeader, settings upl
 		_ = os.Remove(finalPath)
 		return imageRecord{}, "", errors.New("无法读取图片记录")
 	}
-	return imageRecord{ID: id, OriginalName: displayName, StorageName: storageName, MimeType: mimeType, Size: info.Size(), CreatedAt: createdAt, URL: imageURL(storageName)}, finalPath, nil
+	return imageRecord{ID: id, OriginalName: displayName, StorageName: storageName, MimeType: mimeType, Size: info.Size(), IsPublic: isPublic, CreatedAt: createdAt, URL: imageURL(storageName)}, finalPath, nil
 }
 
 func cleanOriginalName(name, fallbackExtension string) string {
@@ -606,6 +635,31 @@ type deleteImagesRequest struct {
 	IDs []int64 `json:"ids"`
 }
 
+type updateImageVisibilityRequest struct {
+	IDs      []int64 `json:"ids"`
+	IsPublic bool    `json:"isPublic"`
+}
+
+func (a *App) handleUpdateImageVisibility(w http.ResponseWriter, r *http.Request) {
+	var request updateImageVisibilityRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式不正确")
+		return
+	}
+	ids, err := normalizeIDs(request.IDs, 200)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "请选择 1–200 张图片")
+		return
+	}
+	result, err := a.db.Exec(`UPDATE images SET is_public = ? WHERE id IN (`+placeholders(len(ids))+`)`, append([]any{request.IsPublic}, anyArguments(ids)...)...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法更新图片公开属性")
+		return
+	}
+	updated, _ := result.RowsAffected()
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated, "isPublic": request.IsPublic})
+}
+
 type pendingDeletion struct {
 	id       int64
 	original string
@@ -709,9 +763,21 @@ func (a *App) handleServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var mimeType string
-	if err := a.db.QueryRow(`SELECT mime_type FROM images WHERE storage_name = ?`, name).Scan(&mimeType); err != nil {
+	var isPublic bool
+	if err := a.db.QueryRow(`SELECT mime_type, is_public FROM images WHERE storage_name = ?`, name).Scan(&mimeType, &isPublic); err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	if !isPublic {
+		_, authenticated, err := a.authenticateRequest(r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "无法验证身份凭据")
+			return
+		}
+		if !authenticated {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	file, err := os.Open(filepath.Join(a.imagesDir, name))
 	if err != nil {
@@ -725,7 +791,11 @@ func (a *App) handleServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	if isPublic {
+		w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
+	} else {
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 	http.ServeContent(w, r, name, info.ModTime(), file)
 }

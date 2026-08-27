@@ -24,11 +24,12 @@ export async function api(path, options = {}) {
   return response.json()
 }
 
-export function uploadWithProgress(files, onProgress, albumIds = []) {
+export function uploadWithProgress(files, onProgress, albumIds = [], isPublic = false) {
   return new Promise((resolve, reject) => {
     const body = new FormData()
     files.forEach((file) => body.append('files', file))
     body.append('albumIds', JSON.stringify(albumIds))
+    body.append('isPublic', String(isPublic))
     const request = new XMLHttpRequest()
     request.open('POST', '/api/images')
     request.withCredentials = true
