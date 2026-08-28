@@ -28,9 +28,14 @@ type securitySettings struct {
 	RealIPHeader       string `json:"realIPHeader"`
 }
 
+type apiSettings struct {
+	RandomImageAlbumMode string `json:"randomImageAlbumMode"`
+}
+
 type applicationSettings struct {
 	Upload   uploadSettings   `json:"upload"`
 	Security securitySettings `json:"security"`
+	API      apiSettings      `json:"api"`
 }
 
 func defaultApplicationSettings() applicationSettings {
@@ -44,6 +49,7 @@ func defaultApplicationSettings() applicationSettings {
 			MaxLoginFailures: 5,
 			RealIPHeader:     "X-Forwarded-For",
 		},
+		API: apiSettings{RandomImageAlbumMode: "union"},
 	}
 }
 
@@ -93,6 +99,11 @@ func validateApplicationSettings(settings applicationSettings) string {
 	case "X-Real-IP", "X-Forwarded-For", "CF-Connecting-IP":
 	default:
 		return "真实 IP 标头无效"
+	}
+	switch settings.API.RandomImageAlbumMode {
+	case "union", "intersection":
+	default:
+		return "随机图片多相册默认操作无效"
 	}
 	return ""
 }

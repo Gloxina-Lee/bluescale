@@ -83,6 +83,9 @@ func normalizeAlbumName(name string) (string, string) {
 	if name == "" || len([]rune(name)) > 80 {
 		return "", "相册名称长度应为 1–80 个字符"
 	}
+	if strings.Contains(name, ",") {
+		return "", "相册名称不能包含英文逗号"
+	}
 	return name, ""
 }
 

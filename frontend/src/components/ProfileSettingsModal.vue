@@ -5,15 +5,14 @@ import { session } from '../session'
 import ErrorToast from './ErrorToast.vue'
 
 const emit = defineEmits(['close'])
-const form = reactive({ displayName: '', username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
+const form = reactive({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
 const saving = ref(false)
 const error = ref('')
 const success = ref('')
-const displayNameInput = ref(null)
+const usernameInput = ref(null)
 
 function resetForm() {
   Object.assign(form, {
-    displayName: session.user?.displayName || '',
     username: session.user?.username || '',
     currentPassword: '',
     newPassword: '',
@@ -43,7 +42,6 @@ async function save() {
     session.user = await api('/api/me', {
       method: 'PUT',
       body: JSON.stringify({
-        displayName: form.displayName,
         username: form.username,
         currentPassword: form.currentPassword,
         newPassword: form.newPassword,
@@ -62,7 +60,7 @@ onMounted(async () => {
   resetForm()
   window.addEventListener('keydown', handleKeydown)
   await nextTick()
-  displayNameInput.value?.focus()
+  usernameInput.value?.focus()
 })
 
 onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
@@ -83,21 +81,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
         <form @submit.prevent="save">
           <div class="profile-dialog-identity">
-            <span class="avatar">{{ session.user?.displayName?.slice(0, 1) }}</span>
+            <span class="avatar">{{ session.user?.username?.slice(0, 1) }}</span>
             <div>
-              <strong>{{ session.user?.displayName }}</strong>
+              <strong>{{ session.user?.username }}</strong>
               <span>管理员账号</span>
             </div>
           </div>
 
           <div class="settings-section-heading">
             <span class="settings-icon"><svg viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0M12 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10"/></svg></span>
-            <div><h2>账号信息</h2><p>更新侧边栏中显示的昵称与登录用户名。</p></div>
+            <div><h2>账号信息</h2><p>更新用于登录及侧边栏显示的用户名。</p></div>
           </div>
-          <div class="settings-form-grid">
-            <label class="field"><span>显示名称</span><input ref="displayNameInput" v-model.trim="form.displayName" required maxlength="64" autocomplete="name" placeholder="输入显示名称" /></label>
-            <label class="field"><span>登录用户名</span><input v-model.trim="form.username" required maxlength="64" autocomplete="username" placeholder="输入登录账号" /></label>
-          </div>
+          <label class="field"><span>用户名</span><input ref="usernameInput" v-model.trim="form.username" required maxlength="64" autocomplete="username" placeholder="输入用户名" /></label>
 
           <div class="settings-divider"></div>
           <div class="settings-section-heading compact-heading">

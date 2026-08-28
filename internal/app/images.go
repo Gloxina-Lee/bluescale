@@ -779,6 +779,18 @@ func (a *App) handleServeImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	cacheControl := "private, no-store"
+	if isPublic {
+		cacheControl = "public, max-age=0, must-revalidate"
+	}
+	a.serveStoredImage(w, r, name, mimeType, cacheControl, "")
+}
+
+func (a *App) serveStoredImage(w http.ResponseWriter, r *http.Request, name, mimeType, cacheControl, contentLocation string) {
+	if !validStorageName(name) {
+		http.NotFound(w, r)
+		return
+	}
 	file, err := os.Open(filepath.Join(a.imagesDir, name))
 	if err != nil {
 		http.NotFound(w, r)
@@ -791,10 +803,9 @@ func (a *App) handleServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", mimeType)
-	if isPublic {
-		w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
-	} else {
-		w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Cache-Control", cacheControl)
+	if contentLocation != "" {
+		w.Header().Set("Content-Location", contentLocation)
 	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 	http.ServeContent(w, r, name, info.ModTime(), file)

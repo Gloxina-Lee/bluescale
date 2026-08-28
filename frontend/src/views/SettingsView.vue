@@ -54,7 +54,7 @@ onMounted(loadSettings)
       <div>
         <span class="eyebrow">SYSTEM PREFERENCES</span>
         <h1>系统设置</h1>
-        <p>调整上传流程和服务的安全边界。</p>
+        <p>调整上传流程、API 行为和服务的安全边界。</p>
       </div>
       <button class="primary-button settings-save-button" type="button" aria-label="保存设置" :disabled="loading || saving" @click="saveSettings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h12l2 2v14H5V4Z"/><path d="M8 4v6h8V4M8 20v-6h8v6"/></svg>
@@ -71,6 +71,10 @@ onMounted(loadSettings)
         <button type="button" :class="{ active: activeTab === 'security' }" @click="activeTab = 'security'">
           <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.9 8.2 7 10 4.1-1.8 7-5.3 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
           <span><strong>安全</strong><small>登录保护与代理</small></span>
+        </button>
+        <button type="button" :class="{ active: activeTab === 'api' }" @click="activeTab = 'api'">
+          <svg viewBox="0 0 24 24"><path d="M8 9 5 12l3 3m8-6 3 3-3 3M14 5l-4 14"/></svg>
+          <span><strong>API</strong><small>随机图片接口</small></span>
         </button>
       </nav>
 
@@ -119,7 +123,7 @@ onMounted(loadSettings)
             </div>
           </template>
 
-          <template v-else>
+          <template v-else-if="activeTab === 'security'">
             <header class="settings-panel-heading">
               <span class="settings-icon"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.9 8.2 7 10 4.1-1.8 7-5.3 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span>
               <div><h2>安全设置</h2><p>保护登录入口，并在可信代理后恢复真实来源 IP。</p></div>
@@ -143,6 +147,24 @@ onMounted(loadSettings)
               <div v-if="form.security.reverseProxyMode" class="dependent-settings narrow-setting">
                 <label class="field"><span>真实 IP 标头</span><span class="select-wrap"><select v-model="form.security.realIPHeader"><option value="X-Real-IP">X-Real-IP</option><option value="X-Forwarded-For">X-Forwarded-For</option><option value="CF-Connecting-IP">CF-Connecting-IP</option></select></span><small>X-Forwarded-For 使用列表中的第一个有效 IP</small></label>
                 <div class="security-warning"><strong>仅在服务只接受可信代理流量时开启</strong><span>如果客户端可以绕过代理直连，它可以伪造这个标头。</span></div>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
+            <header class="settings-panel-heading">
+              <span class="settings-icon"><svg viewBox="0 0 24 24"><path d="M8 9 5 12l3 3m8-6 3 3-3 3M14 5l-4 14"/></svg></span>
+              <div><h2>API 设置</h2><p>配置公开接口省略可选参数时采用的默认行为。</p></div>
+            </header>
+
+            <div class="settings-card">
+              <div class="settings-card-title"><div><h3>随机图片</h3><p>控制 <code>/random</code> 同时指定多个相册时的默认匹配方式。</p></div></div>
+              <div class="dependent-settings narrow-setting">
+                <label class="field">
+                  <span>多相册默认操作</span>
+                  <span class="select-wrap"><select v-model="form.api.randomImageAlbumMode"><option value="union">并集</option><option value="intersection">交集</option></select></span>
+                  <small>省略 <code>mode</code> 时使用；并集匹配任一相册，交集要求图片属于全部相册。</small>
+                </label>
               </div>
             </div>
           </template>

@@ -119,6 +119,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tokens", a.requireAuth(a.handleCreateAPIToken))
 	mux.HandleFunc("DELETE /api/tokens", a.requireAuth(a.handleDeleteAPITokens))
 	mux.HandleFunc("GET /api/tokens/{id}", a.requireAuth(a.handleGetAPIToken))
+	mux.HandleFunc("GET /random", a.handleRandomImage)
 	mux.HandleFunc("GET /i/{name}", a.handleServeImage)
 	mux.HandleFunc("/", a.handleFrontend)
 

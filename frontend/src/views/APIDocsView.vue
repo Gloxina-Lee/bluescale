@@ -5,7 +5,7 @@ const endpoints = [
   { method: 'POST', path: '/api/login', auth: '无需', description: '使用管理员账号登录并建立 Cookie 会话。' },
   { method: 'POST', path: '/api/logout', auth: '必须', description: '注销当前 Cookie 会话。' },
   { method: 'GET', path: '/api/me', auth: '必须', description: '读取当前管理员资料。' },
-  { method: 'PUT', path: '/api/me', auth: '必须', description: '更新管理员名称、账号或密码。' },
+  { method: 'PUT', path: '/api/me', auth: '必须', description: '更新管理员用户名或密码。' },
   { method: 'GET', path: '/api/settings', auth: '必须', description: '读取上传与安全设置。' },
   { method: 'PUT', path: '/api/settings', auth: '必须', description: '更新上传与安全设置。' },
   { method: 'GET', path: '/api/albums', auth: '可选', description: '列出相册；匿名请求的图片数量只统计公开图片。' },
@@ -22,13 +22,14 @@ const endpoints = [
   { method: 'POST', path: '/api/tokens', auth: '必须', description: '生成 API Token；完整 Token 仅在此次响应中返回。' },
   { method: 'DELETE', path: '/api/tokens', auth: '必须', description: '批量删除并立即撤销 API Token。' },
   { method: 'GET', path: '/api/tokens/{id}', auth: '必须', description: '读取 Token 的创建时间与最后使用时间。' },
+  { method: 'GET', path: '/random', auth: '无需', description: '从全部公开图片或指定相册范围内随机返回一张图片。' },
   { method: 'GET', path: '/i/{name}', auth: '可选', description: '读取图片原文件；私密图片需要鉴权，匿名请求返回 404。' },
 ]
 
 const requestBodies = [
-  { endpoint: 'POST /api/setup', body: '{ "displayName": "BlueScale", "username": "Admin", "password": "Admin123", "databaseType": "sqlite" }' },
+  { endpoint: 'POST /api/setup', body: '{ "username": "Admin", "password": "Admin123", "databaseType": "sqlite" }' },
   { endpoint: 'POST /api/login', body: '{ "username": "Admin", "password": "Admin123" }' },
-  { endpoint: 'PUT /api/me', body: '{ "displayName": "名称", "username": "Admin", "currentPassword": "旧密码", "newPassword": "新密码" }' },
+  { endpoint: 'PUT /api/me', body: '{ "username": "Admin", "currentPassword": "旧密码", "newPassword": "新密码" }' },
   { endpoint: 'POST /api/albums', body: '{ "name": "旅行" }' },
   { endpoint: 'DELETE /api/albums', body: '{ "ids": [1, 2] }' },
   { endpoint: 'POST /api/albums/merge', body: '{ "ids": [1, 2], "targetId": 1 }' },
@@ -67,6 +68,14 @@ const requestBodies = [
       <header><div><span class="eyebrow">IMAGE LIST</span><h2>图片列表查询参数</h2></div></header>
       <div class="docs-parameter-grid"><div><code>page</code><span>页码，默认 1</span></div><div><code>pageSize</code><span>每页 1–200 张，默认 24</span></div><div><code>format</code><span>jpeg、png、gif、webp、avif 或 all</span></div><div><code>album</code><span>相册 ID，或 none 表示未分类</span></div><div><code>visibility</code><span>public、private 或 all；私密结果需要鉴权</span></div></div>
       <p class="docs-example"><code>GET /api/images?page=1&amp;pageSize=24&amp;format=webp&amp;album=2</code></p>
+    </section>
+
+    <section class="docs-card">
+      <header><div><span class="eyebrow">RANDOM IMAGE</span><h2>随机图片</h2></div></header>
+      <p class="docs-copy"><code>GET /random</code> 直接返回一张公开图片。使用英文逗号分隔多个相册名称；相册名称本身不能包含英文逗号。</p>
+      <div class="docs-parameter-grid"><div><code>albums</code><span>可选，相册名称列表，例如 旅行,收藏</span></div><div><code>mode</code><span>可选，union 表示并集，intersection 表示交集；省略时读取系统设置</span></div></div>
+      <p class="docs-example"><code>GET /random?albums=album_a,album_b</code></p>
+      <p class="docs-example"><code>GET /random?albums=album_c,album_d&amp;mode=intersection</code></p>
     </section>
 
     <section class="docs-card">

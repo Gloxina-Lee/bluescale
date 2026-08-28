@@ -27,9 +27,8 @@ import (
 )
 
 const (
-	testAdminDisplayName = "BlueScale"
-	testAdminUsername    = "Admin"
-	testAdminPassword    = "Admin123"
+	testAdminUsername = "Admin"
+	testAdminPassword = "Admin123"
 )
 
 func TestCompleteImageLifecycle(t *testing.T) {
@@ -62,7 +61,7 @@ func TestCompleteImageLifecycle(t *testing.T) {
 	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
 		"username": testAdminUsername, "password": testAdminPassword,
 	}, http.StatusOK, &account)
-	if account.DisplayName != testAdminDisplayName || account.Username != testAdminUsername {
+	if account.Username != testAdminUsername {
 		t.Fatalf("unexpected administrator: %#v", account)
 	}
 
@@ -138,7 +137,7 @@ func TestSessionSurvivesServerRestart(t *testing.T) {
 
 	var current administrator
 	doJSON(t, client, http.MethodGet, restartedServer.URL+"/api/me", nil, http.StatusOK, &current)
-	if current.DisplayName != testAdminDisplayName {
+	if current.Username != testAdminUsername {
 		t.Fatalf("session restored the wrong administrator: %#v", current)
 	}
 	var storedHash string
@@ -250,8 +249,15 @@ func TestMultiUserDatabaseMigratesToSingleUser(t *testing.T) {
 	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
 		"username": "current-admin", "password": "current-password",
 	}, http.StatusOK, &migrated)
-	if migrated.DisplayName != "当前管理员" {
+	if migrated.Username != "current-admin" {
 		t.Fatalf("unexpected migrated administrator: %#v", migrated)
+	}
+	hasDisplayName, err := tableHasColumn(application.db, "administrators", "display_name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasDisplayName {
+		t.Fatal("administrators.display_name still exists")
 	}
 
 	var listing struct {
@@ -530,16 +536,16 @@ func TestUpdateAdministratorProfile(t *testing.T) {
 
 	var updated administrator
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
-		"displayName": "新的名称", "username": "Renamed", "currentPassword": "", "newPassword": "",
+		"username": "Renamed", "currentPassword": "", "newPassword": "",
 	}, http.StatusOK, &updated)
-	if updated.DisplayName != "新的名称" || updated.Username != "Renamed" {
+	if updated.Username != "Renamed" {
 		t.Fatalf("profile was not updated: %#v", updated)
 	}
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
-		"displayName": "新的名称", "username": "Renamed", "currentPassword": "wrong-password", "newPassword": "new-secure-password",
+		"username": "Renamed", "currentPassword": "wrong-password", "newPassword": "new-secure-password",
 	}, http.StatusUnauthorized, nil)
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
-		"displayName": "新的名称", "username": "Renamed", "currentPassword": testAdminPassword, "newPassword": "new-secure-password",
+		"username": "Renamed", "currentPassword": testAdminPassword, "newPassword": "new-secure-password",
 	}, http.StatusOK, nil)
 
 	newClient := newCookieClient(t)
@@ -664,6 +670,36 @@ func TestImageConversionTargets(t *testing.T) {
 				t.Fatalf("unexpected converted dimensions: %#v", config)
 			}
 		})
+	}
+}
+
+func TestLegacySettingsGainRandomImageDefault(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	defaults := defaultApplicationSettings()
+	legacy := struct {
+		Upload   uploadSettings   `json:"upload"`
+		Security securitySettings `json:"security"`
+	}{Upload: defaults.Upload, Security: defaults.Security}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)`, applicationSettingsKey, string(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadApplicationSettings(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.API.RandomImageAlbumMode != "union" {
+		t.Fatalf("legacy settings did not receive the default API mode: %#v", loaded.API)
 	}
 }
 
@@ -831,10 +867,118 @@ func TestAlbumsFilteringPaginationAndRelationships(t *testing.T) {
 	}
 }
 
+func TestRandomImageEndpointAndDefaultAlbumMode(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	client := newCookieClient(t)
+	setupTestAdministrator(t, client, server.URL)
+	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+
+	var settings applicationSettings
+	doJSON(t, client, http.MethodGet, server.URL+"/api/settings", nil, http.StatusOK, &settings)
+	if settings.API.RandomImageAlbumMode != "union" {
+		t.Fatalf("unexpected default random-image album mode: %#v", settings.API)
+	}
+	settings.Upload.RenameImages = false
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
+
+	createAlbum := func(name string) albumRecord {
+		t.Helper()
+		var album albumRecord
+		doJSON(t, client, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": name}, http.StatusCreated, &album)
+		return album
+	}
+	albumA := createAlbum("album_a")
+	albumB := createAlbum("album_b")
+	albumC := createAlbum("album_c")
+	doJSON(t, client, http.MethodPost, server.URL+"/api/albums", map[string]string{"name": "invalid,name"}, http.StatusBadRequest, nil)
+
+	onlyA := uploadTestPNGToAlbums(t, client, server.URL, "only-a.png", []int64{albumA.ID})
+	onlyB := uploadTestPNGToAlbums(t, client, server.URL, "only-b.png", []int64{albumB.ID})
+	onlyC := uploadTestPNGToAlbums(t, client, server.URL, "only-c.png", []int64{albumC.ID})
+	shared := uploadTestPNGToAlbums(t, client, server.URL, "shared.png", []int64{albumA.ID, albumB.ID})
+	privateShared := uploadTestPNGToAlbums(t, client, server.URL, "private-shared.png", []int64{albumA.ID, albumB.ID})
+	unassigned := uploadTestPNG(t, client, server.URL, "unassigned.png")
+	doJSON(t, client, http.MethodPut, server.URL+"/api/images/visibility", map[string]any{
+		"ids": []int64{onlyA.ID, onlyB.ID, onlyC.ID, shared.ID, unassigned.ID}, "isPublic": true,
+	}, http.StatusOK, nil)
+
+	requestRandom := func(path string, expectedStatus int) string {
+		t.Helper()
+		response, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != expectedStatus {
+			t.Fatalf("GET %s status = %d, want %d; body = %s", path, response.StatusCode, expectedStatus, body)
+		}
+		if expectedStatus != http.StatusOK {
+			return ""
+		}
+		if response.Header.Get("Content-Type") != "image/png" || response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("GET %s returned unexpected headers: %#v", path, response.Header)
+		}
+		if !bytes.Equal(body, testPNGBytes(t)) {
+			t.Fatalf("GET %s did not return the selected image", path)
+		}
+		location := response.Header.Get("Content-Location")
+		if !strings.HasPrefix(location, "/i/") {
+			t.Fatalf("GET %s returned invalid content location %q", path, location)
+		}
+		return location
+	}
+
+	allPublic := map[string]bool{onlyA.URL: true, onlyB.URL: true, onlyC.URL: true, shared.URL: true, unassigned.URL: true}
+	if location := requestRandom("/random", http.StatusOK); !allPublic[location] || location == privateShared.URL {
+		t.Fatalf("unfiltered random endpoint selected an unexpected image: %q", location)
+	}
+	unionCandidates := map[string]bool{onlyA.URL: true, onlyB.URL: true, shared.URL: true}
+	if location := requestRandom("/random?albums=album_a,album_b&mode=union", http.StatusOK); !unionCandidates[location] {
+		t.Fatalf("union selected an image outside the requested albums: %q", location)
+	}
+	if location := requestRandom("/random?albums=album_a,album_b&mode=intersection", http.StatusOK); location != shared.URL {
+		t.Fatalf("intersection selected %q, want %q", location, shared.URL)
+	}
+	if location := requestRandom("/random?albums=album_a,album_a&mode=intersection", http.StatusOK); location != onlyA.URL && location != shared.URL {
+		t.Fatalf("duplicate album names changed intersection semantics: %q", location)
+	}
+
+	if location := requestRandom("/random?albums=album_a,album_c", http.StatusOK); location != onlyA.URL && location != onlyC.URL && location != shared.URL {
+		t.Fatalf("default union selected an unexpected image: %q", location)
+	}
+	settings.API.RandomImageAlbumMode = "intersection"
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
+	requestRandom("/random?albums=album_a,album_c", http.StatusNotFound)
+	requestRandom("/random?albums=album_a,album_c&mode=union", http.StatusOK)
+
+	requestRandom("/random?albums=missing", http.StatusNotFound)
+	requestRandom("/random?albums=album_a,,album_b", http.StatusBadRequest)
+	requestRandom("/random?albums=album_a&mode=invalid", http.StatusBadRequest)
+	requestRandom("/random?mode=union", http.StatusBadRequest)
+	requestRandom("/random?unknown=value", http.StatusBadRequest)
+
+	settings.API.RandomImageAlbumMode = "invalid"
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusBadRequest, nil)
+}
+
 func setupPayload() map[string]string {
 	return map[string]string{
-		"displayName": testAdminDisplayName, "username": testAdminUsername,
-		"password": testAdminPassword, "databaseType": "sqlite",
+		"username": testAdminUsername, "password": testAdminPassword, "databaseType": "sqlite",
 	}
 }
 

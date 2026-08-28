@@ -20,9 +20,8 @@ const sessionCookieName = "bluescale_session"
 type administratorContextKey struct{}
 
 type administrator struct {
-	ID          int64  `json:"id"`
-	DisplayName string `json:"displayName"`
-	Username    string `json:"username"`
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
 }
 
 type sessionStore struct {
@@ -92,8 +91,8 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 
 func (a *App) loadAdministrator() (administrator, error) {
 	var account administrator
-	err := a.db.QueryRow(`SELECT id, display_name, username FROM administrators WHERE id = 1`).
-		Scan(&account.ID, &account.DisplayName, &account.Username)
+	err := a.db.QueryRow(`SELECT id, username FROM administrators WHERE id = 1`).
+		Scan(&account.ID, &account.Username)
 	return account, err
 }
 
@@ -167,7 +166,6 @@ func (a *App) handleStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 type setupRequest struct {
-	DisplayName  string `json:"displayName"`
 	Username     string `json:"username"`
 	Password     string `json:"password"`
 	DatabaseType string `json:"databaseType"`
@@ -179,14 +177,9 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式不正确")
 		return
 	}
-	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Username = strings.TrimSpace(request.Username)
-	if request.DisplayName == "" || len([]rune(request.DisplayName)) > 64 {
-		writeError(w, http.StatusBadRequest, "管理员名称长度应为 1–64 个字符")
-		return
-	}
 	if request.Username == "" || len([]rune(request.Username)) > 64 {
-		writeError(w, http.StatusBadRequest, "账号长度应为 1–64 个字符")
+		writeError(w, http.StatusBadRequest, "用户名长度应为 1–64 个字符")
 		return
 	}
 	if len(request.Password) < 8 || len(request.Password) > 128 {
@@ -221,7 +214,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "系统已完成首次配置")
 		return
 	}
-	if _, err := tx.Exec(`INSERT INTO administrators (id, display_name, username, password_hash) VALUES (1, ?, ?, ?)`, request.DisplayName, request.Username, string(hash)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO administrators (id, username, password_hash) VALUES (1, ?, ?)`, request.Username, string(hash)); err != nil {
 		writeError(w, http.StatusInternalServerError, "无法保存管理员")
 		return
 	}
@@ -268,13 +261,13 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if security.LimitLoginFailures {
 			a.recordLoginFailure(clientIP)
 		}
-		writeError(w, http.StatusUnauthorized, "账号或密码不正确")
+		writeError(w, http.StatusUnauthorized, "用户名或密码不正确")
 	}
 	var account administrator
 	var passwordHash string
-	err := a.db.QueryRow(`SELECT id, display_name, username, password_hash
+	err := a.db.QueryRow(`SELECT id, username, password_hash
 		FROM administrators WHERE username = ? COLLATE NOCASE`, request.Username).
-		Scan(&account.ID, &account.DisplayName, &account.Username, &passwordHash)
+		Scan(&account.ID, &account.Username, &passwordHash)
 	if err != nil {
 		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(request.Password))
 		loginFailed()
@@ -312,7 +305,6 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateMeRequest struct {
-	DisplayName     string `json:"displayName"`
 	Username        string `json:"username"`
 	CurrentPassword string `json:"currentPassword"`
 	NewPassword     string `json:"newPassword"`
@@ -329,14 +321,9 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式不正确")
 		return
 	}
-	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Username = strings.TrimSpace(request.Username)
-	if request.DisplayName == "" || len([]rune(request.DisplayName)) > 64 {
-		writeError(w, http.StatusBadRequest, "显示名称长度应为 1–64 个字符")
-		return
-	}
 	if request.Username == "" || len([]rune(request.Username)) > 64 {
-		writeError(w, http.StatusBadRequest, "登录账号长度应为 1–64 个字符")
+		writeError(w, http.StatusBadRequest, "用户名长度应为 1–64 个字符")
 		return
 	}
 	if request.NewPassword != "" && (len(request.NewPassword) < 8 || len(request.NewPassword) > 128) {
@@ -346,7 +333,7 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	if request.NewPassword == "" {
-		_, err = a.db.Exec(`UPDATE administrators SET display_name = ?, username = ? WHERE id = ?`, request.DisplayName, request.Username, account.ID)
+		_, err = a.db.Exec(`UPDATE administrators SET username = ? WHERE id = ?`, request.Username, account.ID)
 	} else {
 		if request.CurrentPassword == "" {
 			writeError(w, http.StatusBadRequest, "修改密码时请输入当前密码")
@@ -366,7 +353,7 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "无法更新密码")
 			return
 		}
-		_, err = a.db.Exec(`UPDATE administrators SET display_name = ?, username = ?, password_hash = ? WHERE id = ?`, request.DisplayName, request.Username, string(newHash), account.ID)
+		_, err = a.db.Exec(`UPDATE administrators SET username = ?, password_hash = ? WHERE id = ?`, request.Username, string(newHash), account.ID)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "无法更新管理员信息")

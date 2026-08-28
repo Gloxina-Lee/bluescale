@@ -36,11 +36,11 @@ async function submit() {
       <div class="form-heading">
         <span class="step-pill">WELCOME BACK</span>
         <h2>管理员登录</h2>
-        <p>{{ route.query.setup === 'done' ? '配置成功，现在使用管理员账号登录。' : '输入你的账号与密码继续。' }}</p>
+        <p>{{ route.query.setup === 'done' ? '配置成功，现在使用管理员用户名登录。' : '输入你的用户名与密码继续。' }}</p>
       </div>
       <label class="field">
-        <span>登录账号</span>
-        <input v-model.trim="form.username" required autocomplete="username" autofocus placeholder="输入登录账号" />
+        <span>用户名</span>
+        <input v-model.trim="form.username" required autocomplete="username" autofocus placeholder="输入用户名" />
       </label>
       <label class="field">
         <span>登录密码</span>

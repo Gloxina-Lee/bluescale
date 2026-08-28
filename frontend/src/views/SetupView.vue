@@ -8,7 +8,6 @@ import { loadStatus } from '../session'
 
 const router = useRouter()
 const form = reactive({
-  displayName: '',
   username: '',
   password: '',
   confirmPassword: '',
@@ -28,7 +27,6 @@ async function submit() {
     await api('/api/setup', {
       method: 'POST',
       body: JSON.stringify({
-        displayName: form.displayName,
         username: form.username,
         password: form.password,
         databaseType: form.databaseType,
@@ -55,12 +53,8 @@ async function submit() {
       </div>
 
       <label class="field">
-        <span>管理员名称</span>
-        <input v-model.trim="form.displayName" required maxlength="64" autocomplete="name" placeholder="例如：Blue 管理员" />
-      </label>
-      <label class="field">
-        <span>登录账号</span>
-        <input v-model.trim="form.username" required maxlength="64" autocomplete="username" placeholder="输入登录账号" />
+        <span>用户名</span>
+        <input v-model.trim="form.username" required maxlength="64" autocomplete="username" placeholder="输入管理员用户名" />
       </label>
       <div class="form-grid">
         <label class="field">

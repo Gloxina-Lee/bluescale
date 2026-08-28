@@ -535,7 +535,7 @@ body.preview-open { overflow: hidden; }
   .image-preview-figure figcaption { padding-bottom: 70px; flex-wrap: wrap; }
   .image-preview-figure figcaption > div { flex-basis: calc(100% - 75px); }
   .settings-layout { grid-template-columns: 1fr; }
-  .settings-tabs { position: static; grid-template-columns: 1fr 1fr; }
+  .settings-tabs { position: static; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .settings-tabs button { min-height: 58px; }
   .drop-zone { min-height: 0; grid-template-columns: 1fr; }
   .upload-sidebar { min-height: 178px; padding: 22px; display: grid; grid-template-columns: 1fr minmax(250px, .8fr); align-items: end; gap: 22px; border-right: 0; border-bottom: 1px solid #e2ebf1; }
@@ -742,7 +742,7 @@ body.preview-open { overflow: hidden; }
 .upload-settings-trigger .menu-chevron { margin-left: auto; transition: transform .18s ease; }
 .upload-settings-trigger[aria-expanded="true"] .menu-chevron { transform: rotate(180deg); }
 .settings-count { min-width: 19px; height: 19px; padding: 0 5px; display: inline-grid; place-items: center; border-radius: 10px; background: var(--accent-soft); color: #278cc3; font-size: .6rem; }
-.upload-settings-popover { position: absolute; z-index: 25; right: 0; bottom: calc(100% + 8px); width: min(320px, calc(100vw - 40px)); padding: 8px; display: grid; gap: 7px; border: 1px solid #d9e6ed; border-radius: 15px; background: rgba(255,255,255,.98); box-shadow: 0 18px 45px rgba(29,70,95,.18); backdrop-filter: blur(16px); }
+.upload-settings-popover { position: absolute; z-index: 25; bottom: calc(100% + 8px); left: 0; width: min(320px, calc(100vw - 40px)); padding: 8px; display: grid; gap: 7px; border: 1px solid #d9e6ed; border-radius: 15px; background: rgba(255,255,255,.98); box-shadow: 0 18px 45px rgba(29,70,95,.18); backdrop-filter: blur(16px); }
 .upload-settings-popover .upload-visibility-control { width: 100%; min-height: 66px; padding: 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 11px; background: #f4f9fb; cursor: pointer; text-align: left; }
 .upload-settings-popover .upload-visibility-control:hover { background: #edf7fb; }
 .upload-visibility-control > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 3px; }

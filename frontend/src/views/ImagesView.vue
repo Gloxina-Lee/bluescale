@@ -259,8 +259,8 @@ onBeforeUnmount(() => {
 
     <div v-if="filtersOpen" class="image-filter-bar">
       <label><span>图片格式</span><span class="select-wrap"><select v-model="formatFilter" @change="applyFilters"><option value="all">全部格式</option><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="gif">GIF</option><option value="webp">WebP</option><option value="avif">AVIF</option></select></span></label>
-      <label><span>所在相册</span><span class="select-wrap"><select v-model="albumFilter" @change="applyFilters"><option value="all">全部相册与未分类</option><option value="none">未归属任何相册</option><option v-for="album in albums" :key="album.id" :value="String(album.id)">{{ album.name }}（{{ album.imageCount }}）</option></select></span></label>
-      <label v-if="isAdmin"><span>可见范围</span><span class="select-wrap"><select v-model="visibilityFilter" @change="applyFilters"><option value="all">公开与私密</option><option value="public">仅公开</option><option value="private">仅私密</option></select></span></label>
+      <label><span>所在相册</span><span class="select-wrap"><select v-model="albumFilter" @change="applyFilters"><option value="all">全部</option><option value="none">无相册</option><option v-for="album in albums" :key="album.id" :value="String(album.id)">{{ album.name }}（{{ album.imageCount }}）</option></select></span></label>
+      <label v-if="isAdmin"><span>可见范围</span><span class="select-wrap"><select v-model="visibilityFilter" @change="applyFilters"><option value="all">全部</option><option value="public">公开</option><option value="private">私密</option></select></span></label>
       <button v-if="hasFilters" class="ghost-button compact filter-reset" type="button" @click="clearFilters">清除筛选</button>
     </div>
 

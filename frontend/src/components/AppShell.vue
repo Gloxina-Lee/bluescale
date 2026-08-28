@@ -126,10 +126,10 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <button class="sidebar-user" type="button" :title="session.user?.displayName" :aria-expanded="accountMenuOpen" aria-haspopup="menu" @click="accountMenuOpen = !accountMenuOpen">
-          <span class="avatar">{{ session.user?.displayName?.slice(0, 1) }}</span>
+        <button class="sidebar-user" type="button" :title="session.user?.username" :aria-expanded="accountMenuOpen" aria-haspopup="menu" @click="accountMenuOpen = !accountMenuOpen">
+          <span class="avatar">{{ session.user?.username?.slice(0, 1) }}</span>
           <div>
-            <strong>{{ session.user?.displayName }}</strong>
+            <strong>{{ session.user?.username }}</strong>
             <span>管理员</span>
           </div>
           <svg class="account-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>

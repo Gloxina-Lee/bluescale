@@ -16,7 +16,6 @@ func initializeDatabase(db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS administrators (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
-			display_name TEXT NOT NULL,
 			username TEXT NOT NULL UNIQUE COLLATE NOCASE,
 			password_hash TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -36,7 +35,10 @@ func initializeDatabase(db *sql.DB) error {
 			return err
 		}
 	}
-	return migrateAdministratorFromMultiUser(db)
+	if err := migrateAdministratorFromMultiUser(db); err != nil {
+		return err
+	}
+	return migrateAdministratorUsernameOnly(db)
 }
 
 func migrateAdministratorFromMultiUser(db *sql.DB) error {
@@ -69,13 +71,35 @@ func migrateAdministratorFromMultiUser(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`INSERT INTO administrators (id, display_name, username, password_hash, created_at)
-		VALUES (1, ?, ?, ?, ?)
+	hasDisplayName, err := tableHasColumn(db, "administrators", "display_name")
+	if err != nil {
+		return err
+	}
+	if hasDisplayName {
+		_, err = db.Exec(`INSERT INTO administrators (id, display_name, username, password_hash, created_at)
+			VALUES (1, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				display_name = excluded.display_name,
+				username = excluded.username,
+				password_hash = excluded.password_hash,
+				created_at = excluded.created_at`, displayName, username, passwordHash, createdAt)
+		return err
+	}
+	_, err = db.Exec(`INSERT INTO administrators (id, username, password_hash, created_at)
+		VALUES (1, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			display_name = excluded.display_name,
 			username = excluded.username,
 			password_hash = excluded.password_hash,
-			created_at = excluded.created_at`, displayName, username, passwordHash, createdAt)
+			created_at = excluded.created_at`, username, passwordHash, createdAt)
+	return err
+}
+
+func migrateAdministratorUsernameOnly(db *sql.DB) error {
+	hasDisplayName, err := tableHasColumn(db, "administrators", "display_name")
+	if err != nil || !hasDisplayName {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE administrators DROP COLUMN display_name`)
 	return err
 }
 
