@@ -338,6 +338,58 @@ func TestProtectedRoutesRequireLogin(t *testing.T) {
 	}
 }
 
+func TestCrossOriginProtectionAndHTTPSHeaders(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	payload, err := json.Marshal(setupPayload())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, headers := range map[string]map[string]string{
+		"different origin": {"Origin": "https://attacker.example"},
+		"cross-site fetch": {"Sec-Fetch-Site": "cross-site"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "http://bluescale.example/api/setup", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			for key, value := range headers {
+				request.Header.Set(key, value)
+			}
+			recorder := httptest.NewRecorder()
+			application.Handler().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status=%d, want 403", recorder.Code)
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "http://bluescale.example/api/setup", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "http://bluescale.example")
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("same-origin setup status=%d, want 201", recorder.Code)
+	}
+
+	httpsRequest := httptest.NewRequest(http.MethodGet, "https://bluescale.example/api/status", nil)
+	httpsRecorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(httpsRecorder, httpsRequest)
+	if got := httpsRecorder.Header().Get("Strict-Transport-Security"); got != "max-age=31536000" {
+		t.Errorf("HSTS header=%q", got)
+	}
+	if got := httpsRecorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("API Cache-Control=%q", got)
+	}
+}
+
 func TestAnonymousReadsOnlyPublicImages(t *testing.T) {
 	application, err := New(Config{
 		DataDir:  t.TempDir(),
@@ -533,6 +585,10 @@ func TestUpdateAdministratorProfile(t *testing.T) {
 	doJSON(t, client, http.MethodPost, server.URL+"/api/login", map[string]string{
 		"username": testAdminUsername, "password": testAdminPassword,
 	}, http.StatusOK, nil)
+	otherSession := newCookieClient(t)
+	doJSON(t, otherSession, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
 
 	var updated administrator
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
@@ -547,6 +603,8 @@ func TestUpdateAdministratorProfile(t *testing.T) {
 	doJSON(t, client, http.MethodPut, server.URL+"/api/me", map[string]string{
 		"username": "Renamed", "currentPassword": testAdminPassword, "newPassword": "new-secure-password",
 	}, http.StatusOK, nil)
+	doJSON(t, client, http.MethodGet, server.URL+"/api/me", nil, http.StatusOK, nil)
+	doJSON(t, otherSession, http.MethodGet, server.URL+"/api/me", nil, http.StatusUnauthorized, nil)
 
 	newClient := newCookieClient(t)
 	doJSON(t, newClient, http.MethodPost, server.URL+"/api/login", map[string]string{
@@ -577,7 +635,7 @@ func TestSettingsControlUploadLimitsConversionAndRenaming(t *testing.T) {
 
 	var settings applicationSettings
 	doJSON(t, client, http.MethodGet, server.URL+"/api/settings", nil, http.StatusOK, &settings)
-	if settings.Upload.MaxImageSizeMB != 25 || settings.Upload.MaxImagesPerUpload != 50 {
+	if settings.Upload.MaxImageSizeMB != 50 || settings.Upload.MaxImagesPerUpload != 50 || settings.Upload.RenameImages {
 		t.Fatalf("unexpected default upload settings: %#v", settings.Upload)
 	}
 	settings.Upload.ConvertImages = true
@@ -765,6 +823,16 @@ func TestLoginFailureLimitAndProxySourceIP(t *testing.T) {
 	application.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(logs.String(), "203.0.113.18 GET /api/status") {
 		t.Fatalf("request log did not include source IP: status=%d log=%q", recorder.Code, logs.String())
+	}
+}
+
+func TestLoginFailureTrackingIsBounded(t *testing.T) {
+	application := &App{loginFailures: make(map[string]loginFailure)}
+	for index := range maxTrackedLoginFailureSources + 100 {
+		application.recordLoginFailure("source-" + strconv.Itoa(index))
+	}
+	if got := len(application.loginFailures); got != maxTrackedLoginFailureSources {
+		t.Fatalf("tracked login failure sources=%d, want %d", got, maxTrackedLoginFailureSources)
 	}
 }
 

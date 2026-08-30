@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import BaseSelect from '../components/BaseSelect.vue'
 import ErrorToast from '../components/ErrorToast.vue'
 
 const router = useRouter()
@@ -11,6 +12,26 @@ const saving = ref(false)
 const error = ref('')
 const saved = ref(false)
 const form = ref(null)
+
+const targetFormatOptions = [
+  { value: 'jpeg', label: 'JPEG' },
+  { value: 'png', label: 'PNG' },
+  { value: 'webp', label: 'WebP' },
+  { value: 'avif', label: 'AVIF' },
+]
+const renameMethodOptions = [
+  { value: 'uuid_v4', label: 'UUIDv4（随机，推荐）' },
+  { value: 'uuid_v5', label: 'UUIDv5（基于图片内容）' },
+]
+const realIPHeaderOptions = [
+  { value: 'X-Real-IP', label: 'X-Real-IP' },
+  { value: 'X-Forwarded-For', label: 'X-Forwarded-For' },
+  { value: 'CF-Connecting-IP', label: 'CF-Connecting-IP' },
+]
+const albumModeOptions = [
+  { value: 'union', label: '并集' },
+  { value: 'intersection', label: '交集' },
+]
 
 const supportsQuality = computed(() => form.value?.upload.targetImageFormat !== 'png')
 
@@ -102,7 +123,7 @@ onMounted(loadSettings)
               </div>
               <div v-if="form.upload.convertImages" class="dependent-settings">
                 <div class="settings-form-grid">
-                  <label class="field"><span>目标图片格式</span><span class="select-wrap"><select v-model="form.upload.targetImageFormat"><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="avif">AVIF</option></select></span><small>PNG 使用无损压缩，不需要质量参数</small></label>
+                  <div class="field"><span>目标图片格式</span><BaseSelect v-model="form.upload.targetImageFormat" :options="targetFormatOptions" aria-label="目标图片格式" /><small>PNG 使用无损压缩，不需要质量参数</small></div>
                   <label v-if="supportsQuality" class="field"><span>压缩质量</span><div class="quality-input"><input v-model.number="form.upload.compressionQuality" type="range" min="1" max="100" /><input v-model.number="form.upload.compressionQuality" type="number" min="1" max="100" required /></div><small>1 体积更小，100 质量更高</small></label>
                 </div>
               </div>
@@ -115,7 +136,7 @@ onMounted(loadSettings)
               </div>
               <div v-if="form.upload.renameImages" class="dependent-settings">
                 <div class="settings-form-grid">
-                  <label class="field"><span>重命名方法</span><span class="select-wrap"><select v-model="form.upload.renameMethod"><option value="uuid_v4">UUIDv4（随机，推荐）</option><option value="uuid_v5">UUIDv5（基于图片内容）</option></select></span><small>UUIDv5 对相同内容生成稳定标识；重复上传时仍会避免名称冲突</small></label>
+                  <div class="field"><span>重命名方法</span><BaseSelect v-model="form.upload.renameMethod" :options="renameMethodOptions" aria-label="重命名方法" /><small>UUIDv5 对相同内容生成稳定标识；重复上传时仍会避免名称冲突</small></div>
                   <div class="inline-toggle-field"><div><strong>去除 UUID 连字符</strong><small>例如将 36 位 UUID 缩短为 32 个字符</small></div><label class="toggle-control icon-only"><input v-model="form.upload.stripUUIDHyphens" type="checkbox" /><span aria-hidden="true"></span></label></div>
                 </div>
               </div>
@@ -145,7 +166,7 @@ onMounted(loadSettings)
                 <label class="toggle-control"><input v-model="form.security.reverseProxyMode" type="checkbox" /><span aria-hidden="true"></span><em>{{ form.security.reverseProxyMode ? '已开启' : '已关闭' }}</em></label>
               </div>
               <div v-if="form.security.reverseProxyMode" class="dependent-settings narrow-setting">
-                <label class="field"><span>真实 IP 标头</span><span class="select-wrap"><select v-model="form.security.realIPHeader"><option value="X-Real-IP">X-Real-IP</option><option value="X-Forwarded-For">X-Forwarded-For</option><option value="CF-Connecting-IP">CF-Connecting-IP</option></select></span><small>X-Forwarded-For 使用列表中的第一个有效 IP</small></label>
+                <div class="field"><span>真实 IP 标头</span><BaseSelect v-model="form.security.realIPHeader" :options="realIPHeaderOptions" aria-label="真实 IP 标头" /><small>X-Forwarded-For 使用列表中的第一个有效 IP</small></div>
                 <div class="security-warning"><strong>仅在服务只接受可信代理流量时开启</strong><span>如果客户端可以绕过代理直连，它可以伪造这个标头。</span></div>
               </div>
             </div>
@@ -160,11 +181,11 @@ onMounted(loadSettings)
             <div class="settings-card">
               <div class="settings-card-title"><div><h3>随机图片</h3><p>控制 <code>/random</code> 同时指定多个相册时的默认匹配方式。</p></div></div>
               <div class="dependent-settings narrow-setting">
-                <label class="field">
+                <div class="field">
                   <span>多相册默认操作</span>
-                  <span class="select-wrap"><select v-model="form.api.randomImageAlbumMode"><option value="union">并集</option><option value="intersection">交集</option></select></span>
+                  <BaseSelect v-model="form.api.randomImageAlbumMode" :options="albumModeOptions" aria-label="多相册默认操作" />
                   <small>省略 <code>mode</code> 时使用；并集匹配任一相册，交集要求图片属于全部相册。</small>
-                </label>
+                </div>
               </div>
             </div>
           </template>

@@ -3,15 +3,74 @@ package app
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
-const loginFailureWindow = 15 * time.Minute
+const (
+	loginFailureWindow            = 15 * time.Minute
+	maxTrackedLoginFailureSources = 4096
+)
 
 type loginFailure struct {
 	Count       int
 	LastFailure time.Time
+}
+
+func (a *App) sameOriginProtection(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || bearerToken(r) != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+			writeError(w, http.StatusForbidden, "拒绝跨站请求")
+			return
+		}
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && !a.originMatchesRequest(r, origin) {
+			writeError(w, http.StatusForbidden, "拒绝跨源请求")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) originMatchesRequest(r *http.Request, rawOrigin string) bool {
+	origin, err := url.Parse(rawOrigin)
+	if err != nil || origin.User != nil || origin.Host == "" || (origin.Scheme != "http" && origin.Scheme != "https") ||
+		(origin.Path != "" && origin.Path != "/") || origin.RawQuery != "" || origin.Fragment != "" {
+		return false
+	}
+	scheme := "http"
+	if a.requestIsHTTPS(r) {
+		scheme = "https"
+	}
+	if !strings.EqualFold(origin.Scheme, scheme) {
+		return false
+	}
+	originHost, ok := canonicalOriginHost(origin.Host, scheme)
+	if !ok {
+		return false
+	}
+	requestHost, ok := canonicalOriginHost(r.Host, scheme)
+	return ok && originHost == requestHost
+}
+
+func canonicalOriginHost(hostPort, scheme string) (string, bool) {
+	parsed, err := url.Parse("//" + hostPort)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" {
+		return "", false
+	}
+	port := parsed.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(strings.ToLower(parsed.Hostname()), port), true
 }
 
 func (a *App) clientIP(r *http.Request) string {
@@ -65,7 +124,17 @@ func (a *App) recordLoginFailure(ip string) {
 	now := time.Now()
 	a.loginFailuresMu.Lock()
 	defer a.loginFailuresMu.Unlock()
-	failure := a.loginFailures[ip]
+	failure, tracked := a.loginFailures[ip]
+	if !tracked && len(a.loginFailures) >= maxTrackedLoginFailureSources {
+		for source, candidate := range a.loginFailures {
+			if now.Sub(candidate.LastFailure) >= loginFailureWindow {
+				delete(a.loginFailures, source)
+			}
+		}
+		if len(a.loginFailures) >= maxTrackedLoginFailureSources {
+			return
+		}
+	}
 	if now.Sub(failure.LastFailure) >= loginFailureWindow {
 		failure.Count = 0
 	}

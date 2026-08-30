@@ -156,7 +156,11 @@ onBeforeUnmount(() => {
     <ProfileSettingsModal v-if="session.user && profileSettingsOpen" @close="profileSettingsOpen = false" />
 
     <main class="page-wrap">
-      <RouterView />
+      <RouterView v-slot="{ Component, route: childRoute }">
+        <Transition name="page-fade" mode="out-in">
+          <component :is="Component" :key="childRoute.name" />
+        </Transition>
+      </RouterView>
     </main>
   </div>
 </template>

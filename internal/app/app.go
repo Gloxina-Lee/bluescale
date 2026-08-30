@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ type Config struct {
 
 type App struct {
 	db              *sql.DB
+	instanceLock    *instanceLock
 	dataDir         string
 	imagesDir       string
 	frontend        fs.FS
@@ -40,12 +42,44 @@ func New(config Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	instanceLock, err := acquireInstanceLock(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	releaseLock := true
+	defer func() {
+		if releaseLock {
+			_ = instanceLock.Close()
+		}
+	}()
+
 	imagesDir := filepath.Join(dataDir, "images")
-	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+	if err := os.MkdirAll(imagesDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(imagesDir, 0o700); err != nil {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "bluescale.db"))
+	databasePath := filepath.Join(dataDir, "bluescale.db")
+	databaseFile, err := os.OpenFile(databasePath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := databaseFile.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(databasePath, 0o600); err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		return nil, err
 	}
@@ -80,19 +114,22 @@ func New(config Config) (*App, error) {
 		return nil, err
 	}
 
-	return &App{
+	application := &App{
 		db:            db,
+		instanceLock:  instanceLock,
 		dataDir:       dataDir,
 		imagesDir:     imagesDir,
 		frontend:      config.Frontend,
 		sessions:      newSessionStore(db, 24*time.Hour),
 		settings:      settings,
 		loginFailures: make(map[string]loginFailure),
-	}, nil
+	}
+	releaseLock = false
+	return application, nil
 }
 
 func (a *App) Close() error {
-	return a.db.Close()
+	return errors.Join(a.db.Close(), a.instanceLock.Close())
 }
 
 func (a *App) Handler() http.Handler {
@@ -123,7 +160,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /i/{name}", a.handleServeImage)
 	mux.HandleFunc("/", a.handleFrontend)
 
-	return a.securityHeaders(a.logRequests(mux))
+	return a.securityHeaders(a.logRequests(a.sameOriginProtection(mux)))
 }
 
 func (a *App) logRequests(next http.Handler) http.Handler {
@@ -142,6 +179,12 @@ func (a *App) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		if a.requestIsHTTPS(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r)
 	})
 }

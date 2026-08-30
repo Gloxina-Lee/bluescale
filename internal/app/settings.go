@@ -41,13 +41,14 @@ type applicationSettings struct {
 func defaultApplicationSettings() applicationSettings {
 	return applicationSettings{
 		Upload: uploadSettings{
-			MaxImageSizeMB: 25, MaxImagesPerUpload: 50,
+			MaxImageSizeMB: 50, MaxImagesPerUpload: 50,
 			TargetImageFormat: "webp", CompressionQuality: 82,
-			RenameImages: true, RenameMethod: "uuid_v4", StripUUIDHyphens: true,
+			RenameImages: false, RenameMethod: "uuid_v4", StripUUIDHyphens: true,
 		},
 		Security: securitySettings{
-			MaxLoginFailures: 5,
-			RealIPHeader:     "X-Forwarded-For",
+			LimitLoginFailures: true,
+			MaxLoginFailures:   5,
+			RealIPHeader:       "X-Forwarded-For",
 		},
 		API: apiSettings{RandomImageAlbumMode: "union"},
 	}

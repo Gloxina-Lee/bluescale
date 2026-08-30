@@ -177,13 +177,14 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式不正确")
 		return
 	}
-	request.Username = strings.TrimSpace(request.Username)
-	if request.Username == "" || len([]rune(request.Username)) > 64 {
-		writeError(w, http.StatusBadRequest, "用户名长度应为 1–64 个字符")
+	username, validationErr := normalizeAdministratorUsername(request.Username)
+	if validationErr != nil {
+		writeError(w, http.StatusBadRequest, validationErr.Error())
 		return
 	}
-	if len(request.Password) < 8 || len(request.Password) > 128 {
-		writeError(w, http.StatusBadRequest, "密码长度应为 8–128 个字符")
+	request.Username = username
+	if err := validateAdministratorPassword([]byte(request.Password)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if request.DatabaseType != "sqlite" {
@@ -321,14 +322,17 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式不正确")
 		return
 	}
-	request.Username = strings.TrimSpace(request.Username)
-	if request.Username == "" || len([]rune(request.Username)) > 64 {
-		writeError(w, http.StatusBadRequest, "用户名长度应为 1–64 个字符")
+	username, validationErr := normalizeAdministratorUsername(request.Username)
+	if validationErr != nil {
+		writeError(w, http.StatusBadRequest, validationErr.Error())
 		return
 	}
-	if request.NewPassword != "" && (len(request.NewPassword) < 8 || len(request.NewPassword) > 128) {
-		writeError(w, http.StatusBadRequest, "新密码长度应为 8–128 个字符")
-		return
+	request.Username = username
+	if request.NewPassword != "" {
+		if err := validateAdministratorPassword([]byte(request.NewPassword)); err != nil {
+			writeError(w, http.StatusBadRequest, "新"+err.Error())
+			return
+		}
 	}
 
 	var err error
@@ -353,7 +357,23 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "无法更新密码")
 			return
 		}
-		_, err = a.db.Exec(`UPDATE administrators SET username = ?, password_hash = ? WHERE id = ?`, request.Username, string(newHash), account.ID)
+		tx, txErr := a.db.Begin()
+		if txErr != nil {
+			writeError(w, http.StatusInternalServerError, "无法更新管理员信息")
+			return
+		}
+		defer tx.Rollback()
+		if _, txErr = tx.Exec(`UPDATE administrators SET username = ?, password_hash = ? WHERE id = ?`, request.Username, string(newHash), account.ID); txErr == nil {
+			if cookie, cookieErr := r.Cookie(sessionCookieName); cookieErr == nil {
+				_, txErr = tx.Exec(`DELETE FROM sessions WHERE token_hash <> ?`, hashSessionToken(cookie.Value))
+			} else {
+				_, txErr = tx.Exec(`DELETE FROM sessions`)
+			}
+		}
+		if txErr == nil {
+			txErr = tx.Commit()
+		}
+		err = txErr
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "无法更新管理员信息")

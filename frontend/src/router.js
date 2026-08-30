@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import SetupView from './views/SetupView.vue'
 import LoginView from './views/LoginView.vue'
@@ -9,6 +10,9 @@ import SettingsView from './views/SettingsView.vue'
 import APIView from './views/APIView.vue'
 import APIDocsView from './views/APIDocsView.vue'
 import { loadStatus, loadUser, session } from './session'
+
+export const navigationPending = ref(false)
+let navigationFinishTimer
 
 const router = createRouter({
   history: createWebHistory(),
@@ -33,6 +37,8 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  window.clearTimeout(navigationFinishTimer)
+  navigationPending.value = true
   try {
     await loadStatus()
     if (!session.configured && to.name !== 'setup') return { name: 'setup' }
@@ -48,6 +54,18 @@ router.beforeEach(async (to) => {
   } catch {
     return true
   }
+})
+
+router.afterEach(() => {
+  window.clearTimeout(navigationFinishTimer)
+  navigationFinishTimer = window.setTimeout(() => {
+    navigationPending.value = false
+  }, 180)
+})
+
+router.onError(() => {
+  window.clearTimeout(navigationFinishTimer)
+  navigationPending.value = false
 })
 
 export default router

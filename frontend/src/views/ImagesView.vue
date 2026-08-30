@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AlbumPickerModal from '../components/AlbumPickerModal.vue'
+import BaseSelect from '../components/BaseSelect.vue'
 import ErrorToast from '../components/ErrorToast.vue'
 import ImagePreviewModal from '../components/ImagePreviewModal.vue'
 import { api } from '../api'
@@ -37,6 +38,25 @@ const allSelected = computed(() => images.value.length > 0 && selected.value.siz
 const isAdmin = computed(() => Boolean(session.user))
 const activeAlbum = computed(() => albums.value.find((album) => String(album.id) === albumFilter.value) || null)
 const hasFilters = computed(() => formatFilter.value !== 'all' || albumFilter.value !== 'all' || (isAdmin.value && visibilityFilter.value !== 'all'))
+const pageSizeOptions = [12, 24, 48, 96].map((value) => ({ value, label: `${value} 张` }))
+const formatOptions = [
+  { value: 'all', label: '全部格式' },
+  { value: 'jpeg', label: 'JPEG' },
+  { value: 'png', label: 'PNG' },
+  { value: 'gif', label: 'GIF' },
+  { value: 'webp', label: 'WebP' },
+  { value: 'avif', label: 'AVIF' },
+]
+const albumOptions = computed(() => [
+  { value: 'all', label: '全部' },
+  { value: 'none', label: '无相册' },
+  ...albums.value.map((album) => ({ value: String(album.id), label: `${album.name}（${album.imageCount}）` })),
+])
+const visibilityOptions = [
+  { value: 'all', label: '全部' },
+  { value: 'public', label: '公开' },
+  { value: 'private', label: '私密' },
+]
 
 async function loadAlbums() {
   try {
@@ -252,15 +272,15 @@ onBeforeUnmount(() => {
     <div class="page-heading management-heading">
       <div><span class="eyebrow">LIBRARY</span><h1>{{ activeAlbum ? activeAlbum.name : (isAdmin ? '图片管理' : '公开图片') }}</h1><p>{{ activeAlbum ? (isAdmin ? '正在查看该相册中的图片；移出相册不会删除原图。' : '浏览该相册中公开分享的图片。') : (isAdmin ? '筛选、预览并管理已上传的图片。' : '无需登录即可浏览、预览并复制公开图片链接。') }}</p></div>
       <div class="header-library-controls">
-        <label class="header-page-size"><span>每页</span><span class="select-wrap"><select v-model.number="pageSize" @change="changePageSize"><option :value="12">12 张</option><option :value="24">24 张</option><option :value="48">48 张</option><option :value="96">96 张</option></select></span></label>
+        <div class="header-page-size"><span>每页</span><BaseSelect v-model="pageSize" :options="pageSizeOptions" aria-label="每页显示数量" @change="changePageSize" /></div>
         <div class="header-pagination" aria-label="分页"><button type="button" aria-label="上一页" :disabled="page <= 1 || loading" @click="changePage(page - 1)">‹</button><span><strong>{{ totalPages ? page : 0 }}</strong><i>/</i>{{ totalPages }}</span><button type="button" aria-label="下一页" :disabled="page >= totalPages || loading" @click="changePage(page + 1)">›</button></div>
       </div>
     </div>
 
     <div v-if="filtersOpen" class="image-filter-bar">
-      <label><span>图片格式</span><span class="select-wrap"><select v-model="formatFilter" @change="applyFilters"><option value="all">全部格式</option><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="gif">GIF</option><option value="webp">WebP</option><option value="avif">AVIF</option></select></span></label>
-      <label><span>所在相册</span><span class="select-wrap"><select v-model="albumFilter" @change="applyFilters"><option value="all">全部</option><option value="none">无相册</option><option v-for="album in albums" :key="album.id" :value="String(album.id)">{{ album.name }}（{{ album.imageCount }}）</option></select></span></label>
-      <label v-if="isAdmin"><span>可见范围</span><span class="select-wrap"><select v-model="visibilityFilter" @change="applyFilters"><option value="all">全部</option><option value="public">公开</option><option value="private">私密</option></select></span></label>
+      <div class="filter-field"><span>图片格式</span><BaseSelect v-model="formatFilter" :options="formatOptions" aria-label="图片格式" @change="applyFilters" /></div>
+      <div class="filter-field"><span>所在相册</span><BaseSelect v-model="albumFilter" :options="albumOptions" aria-label="所在相册" @change="applyFilters" /></div>
+      <div v-if="isAdmin" class="filter-field"><span>可见范围</span><BaseSelect v-model="visibilityFilter" :options="visibilityOptions" aria-label="可见范围" @change="applyFilters" /></div>
       <button v-if="hasFilters" class="ghost-button compact filter-reset" type="button" @click="clearFilters">清除筛选</button>
     </div>
 

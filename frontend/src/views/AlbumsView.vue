@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { session } from '../session'
+import BaseSelect from '../components/BaseSelect.vue'
 import ErrorToast from '../components/ErrorToast.vue'
 
 const albums = ref([])
@@ -17,6 +18,7 @@ const mergeTargetID = ref(null)
 const allSelected = computed(() => albums.value.length > 0 && selected.value.size === albums.value.length)
 const isAdmin = computed(() => Boolean(session.user))
 const selectedAlbums = computed(() => albums.value.filter((album) => selected.value.has(album.id)))
+const mergeTargetOptions = computed(() => selectedAlbums.value.map((album) => ({ value: album.id, label: album.name })))
 
 async function loadAlbums() {
   loading.value = true
@@ -163,7 +165,7 @@ onMounted(loadAlbums)
       <section class="management-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="merge-album-title">
         <header><div><span class="eyebrow">MERGE</span><h2 id="merge-album-title">合并 {{ selected.size }} 个相册</h2></div><button type="button" aria-label="关闭" :disabled="working" @click="mergeOpen = false">×</button></header>
         <form @submit.prevent="mergeAlbums">
-          <label class="field"><span>合并后保留</span><span class="select-wrap"><select v-model.number="mergeTargetID"><option v-for="album in selectedAlbums" :key="album.id" :value="album.id">{{ album.name }}</option></select></span><small>其余相册会被删除，所有图片关系会合并到这个相册中</small></label>
+          <div class="field"><span>合并后保留</span><BaseSelect v-model="mergeTargetID" :options="mergeTargetOptions" aria-label="合并后保留的相册" /><small>其余相册会被删除，所有图片关系会合并到这个相册中</small></div>
           <footer><button class="secondary-button" type="button" :disabled="working" @click="mergeOpen = false">取消</button><button class="primary-button" type="submit" :disabled="working">{{ working ? '正在合并…' : '确认合并' }}</button></footer>
         </form>
       </section>

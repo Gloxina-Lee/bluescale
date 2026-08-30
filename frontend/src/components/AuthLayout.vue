@@ -2,6 +2,8 @@
 import BrandMark from './BrandMark.vue'
 import { theme, toggleTheme } from '../theme'
 
+const copyrightYear = new Date().getFullYear()
+
 defineProps({
   eyebrow: String,
   title: String,
@@ -25,9 +27,7 @@ defineProps({
         <h1>{{ title }}</h1>
         <p>{{ description }}</p>
       </div>
-      <div class="feature-row">
-        <span>Go 原生直出</span><i></i><span>SQLite</span><i></i><span>私有图床</span>
-      </div>
+      <div class="auth-copyright">© {{ copyrightYear }} BlueScale. 保留所有权利。</div>
     </section>
     <section class="auth-panel">
       <slot />

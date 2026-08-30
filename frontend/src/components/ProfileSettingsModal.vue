@@ -101,8 +101,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
           </div>
           <label class="field"><span>当前密码</span><input v-model="form.currentPassword" :required="Boolean(form.newPassword)" type="password" autocomplete="current-password" placeholder="修改密码时需要验证" /></label>
           <div class="settings-form-grid">
-            <label class="field"><span>新密码</span><input v-model="form.newPassword" minlength="8" maxlength="128" type="password" autocomplete="new-password" placeholder="至少 8 个字符" /></label>
-            <label class="field"><span>确认新密码</span><input v-model="form.confirmPassword" :required="Boolean(form.newPassword)" minlength="8" maxlength="128" type="password" autocomplete="new-password" placeholder="再次输入新密码" /></label>
+            <label class="field"><span>新密码</span><input v-model="form.newPassword" minlength="8" maxlength="72" type="password" autocomplete="new-password" placeholder="至少 8 个字符" /></label>
+            <label class="field"><span>确认新密码</span><input v-model="form.confirmPassword" :required="Boolean(form.newPassword)" minlength="8" maxlength="72" type="password" autocomplete="new-password" placeholder="再次输入新密码" /></label>
           </div>
 
           <p v-if="success" class="inline-message success" role="status"><span>✓</span>{{ success }}</p>

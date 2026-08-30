@@ -2,11 +2,13 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AuthLayout from '../components/AuthLayout.vue'
+import BaseSelect from '../components/BaseSelect.vue'
 import ErrorToast from '../components/ErrorToast.vue'
 import { api } from '../api'
 import { loadStatus } from '../session'
 
 const router = useRouter()
+const databaseOptions = [{ value: 'sqlite', label: 'SQLite（本地文件）' }]
 const form = reactive({
   username: '',
   password: '',
@@ -59,22 +61,18 @@ async function submit() {
       <div class="form-grid">
         <label class="field">
           <span>登录密码</span>
-          <input v-model="form.password" required minlength="8" maxlength="128" type="password" autocomplete="new-password" placeholder="至少 8 个字符" />
+          <input v-model="form.password" required minlength="8" maxlength="72" type="password" autocomplete="new-password" placeholder="至少 8 个字符" />
         </label>
         <label class="field">
           <span>确认密码</span>
-          <input v-model="form.confirmPassword" required minlength="8" maxlength="128" type="password" autocomplete="new-password" placeholder="再次输入密码" />
+          <input v-model="form.confirmPassword" required minlength="8" maxlength="72" type="password" autocomplete="new-password" placeholder="再次输入密码" />
         </label>
       </div>
-      <label class="field">
+      <div class="field">
         <span>数据库类型</span>
-        <span class="select-wrap">
-          <select v-model="form.databaseType">
-            <option value="sqlite">SQLite（本地文件）</option>
-          </select>
-        </span>
+        <BaseSelect v-model="form.databaseType" :options="databaseOptions" aria-label="数据库类型" />
         <small>当前版本仅支持 SQLite，无需额外安装数据库。</small>
-      </label>
+      </div>
 
       <button class="primary-button" type="submit" :disabled="busy">
         <span>{{ busy ? '正在配置…' : '完成配置' }}</span>
