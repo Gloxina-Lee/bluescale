@@ -8,4 +8,8 @@ $env:CGO_ENABLED = "0"
 $env:GOOS = "linux"
 $env:GOARCH = "amd64"
 
-go build -trimpath -ldflags="-s -w" -o dist/bluescale-linux-amd64 .
+go build `
+  -tags nodynamic `
+  -trimpath `
+  -ldflags="-s -w" `
+  -o dist/bluescale-linux-amd64 .

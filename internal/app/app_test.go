@@ -390,6 +390,41 @@ func TestCrossOriginProtectionAndHTTPSHeaders(t *testing.T) {
 	}
 }
 
+func TestInitialSetupAcceptsSameOriginThroughHTTPSProxy(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	payload, err := json.Marshal(setupPayload())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rejected := httptest.NewRequest(http.MethodPost, "http://bluescale.example/api/setup", bytes.NewReader(payload))
+	rejected.Header.Set("Content-Type", "application/json")
+	rejected.Header.Set("Origin", "https://attacker.example")
+	rejected.Header.Set("X-Forwarded-Proto", "https")
+	rejectedRecorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(rejectedRecorder, rejected)
+	if rejectedRecorder.Code != http.StatusForbidden {
+		t.Fatalf("proxied cross-origin setup status=%d, want 403", rejectedRecorder.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "http://bluescale.example/api/setup", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://bluescale.example")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	recorder := httptest.NewRecorder()
+	application.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("proxied same-origin setup status=%d body=%s, want 201", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAnonymousReadsOnlyPublicImages(t *testing.T) {
 	application, err := New(Config{
 		DataDir:  t.TempDir(),

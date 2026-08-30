@@ -42,10 +42,7 @@ func (a *App) originMatchesRequest(r *http.Request, rawOrigin string) bool {
 		(origin.Path != "" && origin.Path != "/") || origin.RawQuery != "" || origin.Fragment != "" {
 		return false
 	}
-	scheme := "http"
-	if a.requestIsHTTPS(r) {
-		scheme = "https"
-	}
+	scheme := requestOriginScheme(r)
 	if !strings.EqualFold(origin.Scheme, scheme) {
 		return false
 	}
@@ -55,6 +52,20 @@ func (a *App) originMatchesRequest(r *http.Request, rawOrigin string) bool {
 	}
 	requestHost, ok := canonicalOriginHost(r.Host, scheme)
 	return ok && originHost == requestHost
+}
+
+func requestOriginScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	// Forwarded proto is used only to compare the browser Origin with the
+	// externally visible URL. Real client IP headers remain gated by the
+	// explicit reverse-proxy setting.
+	forwardedProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	if strings.EqualFold(forwardedProto, "https") {
+		return "https"
+	}
+	return "http"
 }
 
 func canonicalOriginHost(hostPort, scheme string) (string, bool) {

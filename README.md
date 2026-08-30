@@ -114,6 +114,37 @@ mkdir -p dist
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/bluescale-linux-amd64 .
 ```
 
-生产环境若通过 HTTPS 反向代理运行，请先在“系统设置 → 安全”中开启反向代理模式，并传递 `X-Forwarded-Proto: https`；Go 会据此为会话 Cookie 启用 `Secure` 属性。只有在反向代理模式开启后，BlueScale 才会信任所选的真实 IP 标头。图片本身始终由 BlueScale 的 Go 进程从 `/i/` 直出。
+## Docker 部署
+
+`Dockerfile` 使用 `alpine:latest` 作为运行镜像，并打包前一步生成的静态 Linux 二进制。默认读取 `dist/bluescale-linux-amd64`：
+
+```bash
+docker build -t bluescale:latest .
+```
+
+容器使用固定的非 root 用户 `10001:10001`，数据目录为 `/data`。使用宿主机目录挂载前，应先创建目录并赋予该用户读写权限：
+
+```bash
+sudo install -d -o 10001 -g 10001 -m 0700 /srv/bluescale/data
+
+docker run -d \
+  --name bluescale \
+  --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -v /srv/bluescale/data:/data \
+  bluescale:latest
+```
+
+上例仅把端口发布到宿主机回环地址，适合由同机 HTTPS 反向代理转发。若使用 ARM64，先构建 `dist/bluescale-linux-arm64`，再执行 `docker build --build-arg TARGETARCH=arm64 -t bluescale:latest .`。
+
+需要在容器环境中恢复管理员时，先停止主容器，然后使用同一个数据挂载启动一次性容器：
+
+```bash
+docker stop bluescale
+docker run --rm -it -v /srv/bluescale/data:/data bluescale:latest admin reset-password
+docker start bluescale
+```
+
+生产环境若通过 HTTPS 反向代理运行，代理需要保留公网 `Host`，并传递 `X-Forwarded-Proto: https`。首次初始化和登录的同源校验会据此识别外部 HTTPS；完成首次登录后，请立即在“系统设置 → 安全”中开启反向代理模式，Go 才会为会话 Cookie 启用 `Secure` 属性，并信任所选的真实 IP 标头。Cloudflare Tunnel 默认会设置 `X-Forwarded-Proto`；如果配置了 `httpHostHeader`，请勿把它改成与浏览器访问域名不同的内部主机名。图片本身始终由 BlueScale 的 Go 进程从 `/i/` 直出。
 
 生产部署建议使用独立的非 root 系统用户运行 BlueScale，并把 `BLUESCALE_DATA_DIR` 指向仅该用户可访问的本地目录。若前面有反向代理，尽量将 `BLUESCALE_ADDR` 绑定为 `127.0.0.1:8080`（或仅代理可访问的内网地址），由代理终止 HTTPS、覆盖而不是追加真实 IP 标头，并阻止公网绕过代理直连。首次初始化应在开放公网访问前完成，同时定期备份数据库和 `images` 目录。
