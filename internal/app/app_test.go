@@ -805,7 +805,7 @@ func TestLegacySettingsGainNewDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.API.RandomImageAlbumMode != "union" {
+	if loaded.API.RandomImageAlbumMode != "union" || loaded.API.RandomImageIgnoreUnknownParameters {
 		t.Fatalf("legacy settings did not receive the default API mode: %#v", loaded.API)
 	}
 	if loaded.Security.EnablePublicCORS || loaded.Security.CORSAllowedOrigin != "*" {
@@ -1006,7 +1006,7 @@ func TestRandomImageEndpointAndDefaultAlbumMode(t *testing.T) {
 
 	var settings applicationSettings
 	doJSON(t, client, http.MethodGet, server.URL+"/api/settings", nil, http.StatusOK, &settings)
-	if settings.API.RandomImageAlbumMode != "union" {
+	if settings.API.RandomImageAlbumMode != "union" || settings.API.RandomImageIgnoreUnknownParameters {
 		t.Fatalf("unexpected default random-image album mode: %#v", settings.API)
 	}
 	settings.Upload.RenameImages = false
@@ -1108,6 +1108,22 @@ func TestRandomImageEndpointAndDefaultAlbumMode(t *testing.T) {
 	requestRandom("/random?albums=album_a&mode=invalid", http.StatusBadRequest)
 	requestRandom("/random?mode=union", http.StatusBadRequest)
 	requestRandom("/random?unknown=value", http.StatusBadRequest)
+	requestRandom("/random?albums=album_a&1", http.StatusBadRequest)
+	requestRandom("/random?albums=album_a,album_b&mode=intersection&type=mobile", http.StatusBadRequest)
+
+	settings.API.RandomImageIgnoreUnknownParameters = true
+	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
+	if location := requestRandom("/random?1&type=mobile", http.StatusFound); !allPublic[location] {
+		t.Fatalf("unknown parameters were not ignored on an unfiltered request: %q", location)
+	}
+	if location := requestRandom("/random?albums=album_a&1", http.StatusFound); location != onlyA.URL && location != shared.URL {
+		t.Fatalf("ignored numeric parameter changed the album filter: %q", location)
+	}
+	if location := requestRandom("/random?albums=album_a,album_b&mode=intersection&type=mobile", http.StatusFound); location != shared.URL {
+		t.Fatalf("ignored type parameter changed the album filter: got %q, want %q", location, shared.URL)
+	}
+	requestRandom("/random?albums=album_a&mode=invalid&type=mobile", http.StatusBadRequest)
+	requestRandom("/random?mode=union&type=mobile", http.StatusBadRequest)
 
 	settings.API.RandomImageAlbumMode = "invalid"
 	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusBadRequest, nil)

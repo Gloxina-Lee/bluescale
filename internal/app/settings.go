@@ -31,7 +31,8 @@ type securitySettings struct {
 }
 
 type apiSettings struct {
-	RandomImageAlbumMode string `json:"randomImageAlbumMode"`
+	RandomImageAlbumMode               string `json:"randomImageAlbumMode"`
+	RandomImageIgnoreUnknownParameters bool   `json:"randomImageIgnoreUnknownParameters"`
 }
 
 type applicationSettings struct {
@@ -53,7 +54,10 @@ func defaultApplicationSettings() applicationSettings {
 			CORSAllowedOrigin:  "*",
 			RealIPHeader:       "X-Forwarded-For",
 		},
-		API: apiSettings{RandomImageAlbumMode: "union"},
+		API: apiSettings{
+			RandomImageAlbumMode:               "union",
+			RandomImageIgnoreUnknownParameters: false,
+		},
 	}
 }
 

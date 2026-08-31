@@ -190,7 +190,7 @@ onMounted(loadSettings)
           <template v-else>
             <header class="settings-panel-heading">
               <span class="settings-icon"><svg viewBox="0 0 24 24"><path d="M8 9 5 12l3 3m8-6 3 3-3 3M14 5l-4 14"/></svg></span>
-              <div><h2>API 设置</h2><p>配置公开接口省略可选参数时采用的默认行为。</p></div>
+              <div><h2>API 设置</h2><p>配置公开接口的参数兼容性与默认行为。</p></div>
             </header>
 
             <div class="settings-card">
@@ -202,6 +202,14 @@ onMounted(loadSettings)
                   <small>省略 <code>mode</code> 时使用；并集匹配任一相册，交集要求图片属于全部相册。</small>
                 </div>
               </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-title">
+                <div><h3>忽略无效参数</h3><p>兼容会自动追加额外查询参数的主题、插件或缓存服务。</p></div>
+                <label class="toggle-control"><input v-model="form.api.randomImageIgnoreUnknownParameters" type="checkbox" /><span aria-hidden="true"></span><em>{{ form.api.randomImageIgnoreUnknownParameters ? '已开启' : '已关闭' }}</em></label>
+              </div>
+              <p class="settings-footnote">开启后，<code>/random</code> 会忽略 <code>albums</code> 和 <code>mode</code> 以外的参数，例如 <code>1</code> 或 <code>type=mobile</code>；关闭时会返回 HTTP 400。已定义参数自身无效时仍返回 400。</p>
             </div>
           </template>
 

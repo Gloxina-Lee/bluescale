@@ -103,9 +103,10 @@ func (a *App) selectRandomPublicImage(albumIDs []int64, mode string) (randomImag
 func (a *App) handleRandomImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	a.applyPublicCORSHeaders(w)
+	apiSettings := a.currentSettings().API
 	query := r.URL.Query()
 	for key := range query {
-		if key != "albums" && key != "mode" {
+		if key != "albums" && key != "mode" && !apiSettings.RandomImageIgnoreUnknownParameters {
 			writeError(w, http.StatusBadRequest, "随机图片查询参数无效")
 			return
 		}
@@ -144,7 +145,7 @@ func (a *App) handleRandomImage(w http.ResponseWriter, r *http.Request) {
 		mode = strings.TrimSpace(modeValues[0])
 	}
 	if mode == "" {
-		mode = a.currentSettings().API.RandomImageAlbumMode
+		mode = apiSettings.RandomImageAlbumMode
 	}
 	if mode != "union" && mode != "intersection" {
 		writeError(w, http.StatusBadRequest, "mode 必须为 union 或 intersection")

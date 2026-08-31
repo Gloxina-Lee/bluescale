@@ -72,7 +72,7 @@ const requestBodies = [
 
     <section class="docs-card">
       <header><div><span class="eyebrow">RANDOM IMAGE</span><h2>随机图片</h2></div></header>
-      <p class="docs-copy"><code>GET /random</code> 返回 <code>302 Found</code>，<code>Location</code> 指向随机选中的公开原图；客户端应允许跟随重定向。重定向本身不缓存，公开原图可由共享 CDN 缓存一天。使用英文逗号分隔多个相册名称；相册名称本身不能包含英文逗号。</p>
+      <p class="docs-copy"><code>GET /random</code> 返回 <code>302 Found</code>，<code>Location</code> 指向随机选中的公开原图；客户端应允许跟随重定向。重定向本身不缓存，公开原图可由共享 CDN 缓存一天。使用英文逗号分隔多个相册名称；相册名称本身不能包含英文逗号。“系统设置 → API → 忽略无效参数”开启后，会忽略 <code>albums</code> 和 <code>mode</code> 以外的查询参数；已定义参数自身无效时仍返回 <code>400</code>。</p>
       <div class="docs-parameter-grid"><div><code>albums</code><span>可选，相册名称列表，例如 旅行,收藏</span></div><div><code>mode</code><span>可选，union 表示并集，intersection 表示交集；省略时读取系统设置</span></div></div>
       <p class="docs-example"><code>GET /random?albums=album_a,album_b</code></p>
       <p class="docs-example"><code>GET /random?albums=album_c,album_d&amp;mode=intersection</code></p>
