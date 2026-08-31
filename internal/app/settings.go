@@ -24,6 +24,8 @@ type uploadSettings struct {
 type securitySettings struct {
 	LimitLoginFailures bool   `json:"limitLoginFailures"`
 	MaxLoginFailures   int    `json:"maxLoginFailures"`
+	EnablePublicCORS   bool   `json:"enablePublicCORS"`
+	CORSAllowedOrigin  string `json:"corsAllowedOrigin"`
 	ReverseProxyMode   bool   `json:"reverseProxyMode"`
 	RealIPHeader       string `json:"realIPHeader"`
 }
@@ -48,6 +50,7 @@ func defaultApplicationSettings() applicationSettings {
 		Security: securitySettings{
 			LimitLoginFailures: true,
 			MaxLoginFailures:   5,
+			CORSAllowedOrigin:  "*",
 			RealIPHeader:       "X-Forwarded-For",
 		},
 		API: apiSettings{RandomImageAlbumMode: "union"},
@@ -67,6 +70,7 @@ func loadApplicationSettings(db *sql.DB) (applicationSettings, error) {
 	if err := json.Unmarshal([]byte(encoded), &settings); err != nil {
 		return applicationSettings{}, err
 	}
+	settings = normalizeApplicationSettings(settings)
 	if message := validateApplicationSettings(settings); message != "" {
 		return applicationSettings{}, errors.New(message)
 	}
@@ -95,6 +99,13 @@ func validateApplicationSettings(settings applicationSettings) string {
 	}
 	if settings.Security.MaxLoginFailures < 1 || settings.Security.MaxLoginFailures > 100 {
 		return "最大登录失败次数应为 1–100"
+	}
+	if settings.Security.CORSAllowedOrigin == "" {
+		if settings.Security.EnablePublicCORS {
+			return "开启公开图片 CORS 时必须填写允许来源"
+		}
+	} else if _, valid := normalizePublicCORSOrigin(settings.Security.CORSAllowedOrigin); !valid {
+		return "CORS 允许来源必须为 * 或不含路径的完整 HTTP/HTTPS 来源"
 	}
 	switch settings.Security.RealIPHeader {
 	case "X-Real-IP", "X-Forwarded-For", "CF-Connecting-IP":
@@ -135,6 +146,7 @@ func (a *App) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式不正确")
 		return
 	}
+	settings = normalizeApplicationSettings(settings)
 	if message := validateApplicationSettings(settings); message != "" {
 		writeError(w, http.StatusBadRequest, message)
 		return
@@ -148,6 +160,16 @@ func (a *App) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	a.settingsMu.Unlock()
 	a.clearLoginFailures()
 	writeJSON(w, http.StatusOK, settings)
+}
+
+func normalizeApplicationSettings(settings applicationSettings) applicationSettings {
+	if settings.Security.CORSAllowedOrigin == "" && !settings.Security.EnablePublicCORS {
+		settings.Security.CORSAllowedOrigin = "*"
+	}
+	if origin, valid := normalizePublicCORSOrigin(settings.Security.CORSAllowedOrigin); valid {
+		settings.Security.CORSAllowedOrigin = origin
+	}
+	return settings
 }
 
 func (s uploadSettings) maxImageBytes() int64 {

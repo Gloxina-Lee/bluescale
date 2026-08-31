@@ -13,7 +13,6 @@ var errRandomAlbumNotFound = errors.New("部分相册不存在")
 
 type randomImageCandidate struct {
 	StorageName string
-	MimeType    string
 }
 
 func parseRandomAlbumNames(raw string) ([]string, string) {
@@ -71,8 +70,8 @@ func (a *App) resolveRandomAlbumIDs(names []string) ([]int64, error) {
 func (a *App) selectRandomPublicImage(albumIDs []int64, mode string) (randomImageCandidate, error) {
 	var candidate randomImageCandidate
 	if len(albumIDs) == 0 {
-		err := a.db.QueryRow(`SELECT storage_name, mime_type FROM images
-			WHERE is_public = 1 ORDER BY RANDOM() LIMIT 1`).Scan(&candidate.StorageName, &candidate.MimeType)
+		err := a.db.QueryRow(`SELECT storage_name FROM images
+			WHERE is_public = 1 ORDER BY RANDOM() LIMIT 1`).Scan(&candidate.StorageName)
 		return candidate, err
 	}
 
@@ -83,25 +82,27 @@ func (a *App) selectRandomPublicImage(albumIDs []int64, mode string) (randomImag
 	placeholderList := placeholders(len(albumIDs))
 	if mode == "intersection" {
 		arguments = append(arguments, len(albumIDs))
-		err := a.db.QueryRow(`SELECT i.storage_name, i.mime_type FROM images i
+		err := a.db.QueryRow(`SELECT i.storage_name FROM images i
 			WHERE i.is_public = 1 AND i.id IN (
 				SELECT ia.image_id FROM image_albums ia
 				WHERE ia.album_id IN (`+placeholderList+`)
 				GROUP BY ia.image_id HAVING COUNT(DISTINCT ia.album_id) = ?
 			)
-			ORDER BY RANDOM() LIMIT 1`, arguments...).Scan(&candidate.StorageName, &candidate.MimeType)
+			ORDER BY RANDOM() LIMIT 1`, arguments...).Scan(&candidate.StorageName)
 		return candidate, err
 	}
-	err := a.db.QueryRow(`SELECT i.storage_name, i.mime_type FROM images i
+	err := a.db.QueryRow(`SELECT i.storage_name FROM images i
 		WHERE i.is_public = 1 AND EXISTS (
 			SELECT 1 FROM image_albums ia
 			WHERE ia.image_id = i.id AND ia.album_id IN (`+placeholderList+`)
 		)
-		ORDER BY RANDOM() LIMIT 1`, arguments...).Scan(&candidate.StorageName, &candidate.MimeType)
+		ORDER BY RANDOM() LIMIT 1`, arguments...).Scan(&candidate.StorageName)
 	return candidate, err
 }
 
 func (a *App) handleRandomImage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	a.applyPublicCORSHeaders(w)
 	query := r.URL.Query()
 	for key := range query {
 		if key != "albums" && key != "mode" {
@@ -129,7 +130,7 @@ func (a *App) handleRandomImage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "无法选择随机图片")
 			return
 		}
-		a.serveStoredImage(w, r, candidate.StorageName, candidate.MimeType, "no-store", imageURL(candidate.StorageName))
+		http.Redirect(w, r, imageURL(candidate.StorageName), http.StatusFound)
 		return
 	}
 
@@ -167,5 +168,5 @@ func (a *App) handleRandomImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "无法选择随机图片")
 		return
 	}
-	a.serveStoredImage(w, r, candidate.StorageName, candidate.MimeType, "no-store", imageURL(candidate.StorageName))
+	http.Redirect(w, r, imageURL(candidate.StorageName), http.StatusFound)
 }

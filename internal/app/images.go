@@ -29,7 +29,12 @@ import (
 	"github.com/google/uuid"
 )
 
-const maxDecodedPixels int64 = 100_000_000
+const (
+	maxDecodedPixels           int64 = 100_000_000
+	publicImageCacheControl          = "public, max-age=0, must-revalidate"
+	publicImageCDNCacheControl       = "public, max-age=86400"
+	privateImageCacheControl         = "private, no-store"
+)
 
 type imageRecord struct {
 	ID           int64  `json:"id"`
@@ -769,6 +774,7 @@ func (a *App) handleServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isPublic {
+		w.Header().Set("Cache-Control", privateImageCacheControl)
 		_, authenticated, err := a.authenticateRequest(r)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "无法验证身份凭据")
@@ -779,14 +785,16 @@ func (a *App) handleServeImage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	cacheControl := "private, no-store"
+	cacheControl := privateImageCacheControl
 	if isPublic {
-		cacheControl = "public, max-age=0, must-revalidate"
+		cacheControl = publicImageCacheControl
+		w.Header().Set("CDN-Cache-Control", publicImageCDNCacheControl)
+		a.applyPublicCORSHeaders(w)
 	}
-	a.serveStoredImage(w, r, name, mimeType, cacheControl, "")
+	a.serveStoredImage(w, r, name, mimeType, cacheControl)
 }
 
-func (a *App) serveStoredImage(w http.ResponseWriter, r *http.Request, name, mimeType, cacheControl, contentLocation string) {
+func (a *App) serveStoredImage(w http.ResponseWriter, r *http.Request, name, mimeType, cacheControl string) {
 	if !validStorageName(name) {
 		http.NotFound(w, r)
 		return
@@ -804,9 +812,6 @@ func (a *App) serveStoredImage(w http.ResponseWriter, r *http.Request, name, mim
 	}
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Cache-Control", cacheControl)
-	if contentLocation != "" {
-		w.Header().Set("Content-Location", contentLocation)
-	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 	http.ServeContent(w, r, name, info.ModTime(), file)
 }

@@ -491,8 +491,8 @@ func TestAnonymousReadsOnlyPublicImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicResponse.Body.Close()
-	if publicResponse.StatusCode != http.StatusOK || publicResponse.Header.Get("Cache-Control") != "public, max-age=0, must-revalidate" {
-		t.Fatalf("public image response status=%d cache=%q", publicResponse.StatusCode, publicResponse.Header.Get("Cache-Control"))
+	if publicResponse.StatusCode != http.StatusOK || publicResponse.Header.Get("Cache-Control") != publicImageCacheControl || publicResponse.Header.Get("CDN-Cache-Control") != publicImageCDNCacheControl {
+		t.Fatalf("public image response status=%d cache=%q cdn-cache=%q", publicResponse.StatusCode, publicResponse.Header.Get("Cache-Control"), publicResponse.Header.Get("CDN-Cache-Control"))
 	}
 
 	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/images/visibility", map[string]any{
@@ -673,6 +673,9 @@ func TestSettingsControlUploadLimitsConversionAndRenaming(t *testing.T) {
 	if settings.Upload.MaxImageSizeMB != 50 || settings.Upload.MaxImagesPerUpload != 50 || settings.Upload.RenameImages {
 		t.Fatalf("unexpected default upload settings: %#v", settings.Upload)
 	}
+	if settings.Security.EnablePublicCORS || settings.Security.CORSAllowedOrigin != "*" {
+		t.Fatalf("unexpected default CORS settings: %#v", settings.Security)
+	}
 	settings.Upload.ConvertImages = true
 	settings.Upload.TargetImageFormat = "jpeg"
 	settings.Upload.CompressionQuality = 76
@@ -766,7 +769,7 @@ func TestImageConversionTargets(t *testing.T) {
 	}
 }
 
-func TestLegacySettingsGainRandomImageDefault(t *testing.T) {
+func TestLegacySettingsGainNewDefaults(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -776,10 +779,21 @@ func TestLegacySettingsGainRandomImageDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	defaults := defaultApplicationSettings()
+	type legacySecuritySettings struct {
+		LimitLoginFailures bool   `json:"limitLoginFailures"`
+		MaxLoginFailures   int    `json:"maxLoginFailures"`
+		ReverseProxyMode   bool   `json:"reverseProxyMode"`
+		RealIPHeader       string `json:"realIPHeader"`
+	}
 	legacy := struct {
-		Upload   uploadSettings   `json:"upload"`
-		Security securitySettings `json:"security"`
-	}{Upload: defaults.Upload, Security: defaults.Security}
+		Upload   uploadSettings         `json:"upload"`
+		Security legacySecuritySettings `json:"security"`
+	}{Upload: defaults.Upload, Security: legacySecuritySettings{
+		LimitLoginFailures: defaults.Security.LimitLoginFailures,
+		MaxLoginFailures:   defaults.Security.MaxLoginFailures,
+		ReverseProxyMode:   defaults.Security.ReverseProxyMode,
+		RealIPHeader:       defaults.Security.RealIPHeader,
+	}}
 	encoded, err := json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -793,6 +807,9 @@ func TestLegacySettingsGainRandomImageDefault(t *testing.T) {
 	}
 	if loaded.API.RandomImageAlbumMode != "union" {
 		t.Fatalf("legacy settings did not receive the default API mode: %#v", loaded.API)
+	}
+	if loaded.Security.EnablePublicCORS || loaded.Security.CORSAllowedOrigin != "*" {
+		t.Fatalf("legacy settings did not receive the default CORS policy: %#v", loaded.Security)
 	}
 }
 
@@ -1016,9 +1033,14 @@ func TestRandomImageEndpointAndDefaultAlbumMode(t *testing.T) {
 		"ids": []int64{onlyA.ID, onlyB.ID, onlyC.ID, shared.ID, unassigned.ID}, "isPublic": true,
 	}, http.StatusOK, nil)
 
+	randomClient := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	requestRandom := func(path string, expectedStatus int) string {
 		t.Helper()
-		response, err := http.Get(server.URL + path)
+		response, err := randomClient.Get(server.URL + path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1030,44 +1052,56 @@ func TestRandomImageEndpointAndDefaultAlbumMode(t *testing.T) {
 		if response.StatusCode != expectedStatus {
 			t.Fatalf("GET %s status = %d, want %d; body = %s", path, response.StatusCode, expectedStatus, body)
 		}
-		if expectedStatus != http.StatusOK {
+		if response.Header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("GET %s returned unexpected Cache-Control: %q", path, response.Header.Get("Cache-Control"))
+		}
+		if expectedStatus != http.StatusFound {
 			return ""
 		}
-		if response.Header.Get("Content-Type") != "image/png" || response.Header.Get("Cache-Control") != "no-store" {
-			t.Fatalf("GET %s returned unexpected headers: %#v", path, response.Header)
-		}
-		if !bytes.Equal(body, testPNGBytes(t)) {
-			t.Fatalf("GET %s did not return the selected image", path)
-		}
-		location := response.Header.Get("Content-Location")
+		location := response.Header.Get("Location")
 		if !strings.HasPrefix(location, "/i/") {
-			t.Fatalf("GET %s returned invalid content location %q", path, location)
+			t.Fatalf("GET %s returned invalid redirect location %q", path, location)
+		}
+		imageResponse, err := http.Get(server.URL + location)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer imageResponse.Body.Close()
+		imageBody, err := io.ReadAll(imageResponse.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if imageResponse.StatusCode != http.StatusOK || imageResponse.Header.Get("Content-Type") != "image/png" || imageResponse.Header.Get("Cache-Control") != publicImageCacheControl || imageResponse.Header.Get("CDN-Cache-Control") != publicImageCDNCacheControl {
+			t.Fatalf("GET %s redirect target returned unexpected headers: %#v", path, imageResponse.Header)
+		}
+		if !bytes.Equal(imageBody, testPNGBytes(t)) {
+			t.Fatalf("GET %s redirect target did not return the selected image", path)
 		}
 		return location
 	}
 
 	allPublic := map[string]bool{onlyA.URL: true, onlyB.URL: true, onlyC.URL: true, shared.URL: true, unassigned.URL: true}
-	if location := requestRandom("/random", http.StatusOK); !allPublic[location] || location == privateShared.URL {
+	if location := requestRandom("/random", http.StatusFound); !allPublic[location] || location == privateShared.URL {
 		t.Fatalf("unfiltered random endpoint selected an unexpected image: %q", location)
 	}
 	unionCandidates := map[string]bool{onlyA.URL: true, onlyB.URL: true, shared.URL: true}
-	if location := requestRandom("/random?albums=album_a,album_b&mode=union", http.StatusOK); !unionCandidates[location] {
+	if location := requestRandom("/random?albums=album_a,album_b&mode=union", http.StatusFound); !unionCandidates[location] {
 		t.Fatalf("union selected an image outside the requested albums: %q", location)
 	}
-	if location := requestRandom("/random?albums=album_a,album_b&mode=intersection", http.StatusOK); location != shared.URL {
+	if location := requestRandom("/random?albums=album_a,album_b&mode=intersection", http.StatusFound); location != shared.URL {
 		t.Fatalf("intersection selected %q, want %q", location, shared.URL)
 	}
-	if location := requestRandom("/random?albums=album_a,album_a&mode=intersection", http.StatusOK); location != onlyA.URL && location != shared.URL {
+	if location := requestRandom("/random?albums=album_a,album_a&mode=intersection", http.StatusFound); location != onlyA.URL && location != shared.URL {
 		t.Fatalf("duplicate album names changed intersection semantics: %q", location)
 	}
 
-	if location := requestRandom("/random?albums=album_a,album_c", http.StatusOK); location != onlyA.URL && location != onlyC.URL && location != shared.URL {
+	if location := requestRandom("/random?albums=album_a,album_c", http.StatusFound); location != onlyA.URL && location != onlyC.URL && location != shared.URL {
 		t.Fatalf("default union selected an unexpected image: %q", location)
 	}
 	settings.API.RandomImageAlbumMode = "intersection"
 	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
 	requestRandom("/random?albums=album_a,album_c", http.StatusNotFound)
-	requestRandom("/random?albums=album_a,album_c&mode=union", http.StatusOK)
+	requestRandom("/random?albums=album_a,album_c&mode=union", http.StatusFound)
 
 	requestRandom("/random?albums=missing", http.StatusNotFound)
 	requestRandom("/random?albums=album_a,,album_b", http.StatusBadRequest)
@@ -1077,6 +1111,131 @@ func TestRandomImageEndpointAndDefaultAlbumMode(t *testing.T) {
 
 	settings.API.RandomImageAlbumMode = "invalid"
 	doJSON(t, client, http.MethodPut, server.URL+"/api/settings", settings, http.StatusBadRequest, nil)
+}
+
+func TestPublicImageCORSSettings(t *testing.T) {
+	application, err := New(Config{
+		DataDir:  t.TempDir(),
+		Frontend: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("test")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	server := httptest.NewServer(application.Handler())
+	t.Cleanup(server.Close)
+	adminClient := newCookieClient(t)
+	setupTestAdministrator(t, adminClient, server.URL)
+	doJSON(t, adminClient, http.MethodPost, server.URL+"/api/login", map[string]string{
+		"username": testAdminUsername, "password": testAdminPassword,
+	}, http.StatusOK, nil)
+
+	publicImage := uploadTestPNG(t, adminClient, server.URL, "cors-public.png")
+	privateImage := uploadTestPNG(t, adminClient, server.URL, "cors-private.png")
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/images/visibility", map[string]any{
+		"ids": []int64{publicImage.ID}, "isPublic": true,
+	}, http.StatusOK, nil)
+
+	redirectClient := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	request := func(client *http.Client, method, path, origin, requestedMethod string, expectedStatus int) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if requestedMethod != "" {
+			req.Header.Set("Access-Control-Request-Method", requestedMethod)
+			req.Header.Set("Access-Control-Request-Headers", "Cache-Control, Range")
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != expectedStatus {
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			t.Fatalf("%s %s status=%d, want %d; body=%s", method, path, response.StatusCode, expectedStatus, body)
+		}
+		return response
+	}
+
+	beforeEnable := request(redirectClient, http.MethodGet, "/random", "https://cache.example", "", http.StatusFound)
+	if beforeEnable.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("disabled CORS unexpectedly allowed an origin: %#v", beforeEnable.Header)
+	}
+	beforeEnable.Body.Close()
+	beforePreflight := request(redirectClient, http.MethodOptions, "/random", "https://cache.example", http.MethodGet, http.StatusNoContent)
+	if beforePreflight.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("disabled CORS preflight unexpectedly allowed an origin: %#v", beforePreflight.Header)
+	}
+	beforePreflight.Body.Close()
+
+	var settings applicationSettings
+	doJSON(t, adminClient, http.MethodGet, server.URL+"/api/settings", nil, http.StatusOK, &settings)
+	settings.Security.EnablePublicCORS = true
+	settings.Security.CORSAllowedOrigin = " https://Cache.Example:443/ "
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
+	if settings.Security.CORSAllowedOrigin != "https://cache.example" {
+		t.Fatalf("CORS origin was not normalized: %q", settings.Security.CORSAllowedOrigin)
+	}
+
+	publicResponse := request(redirectClient, http.MethodGet, publicImage.URL, "https://cache.example", "", http.StatusOK)
+	if publicResponse.Header.Get("Access-Control-Allow-Origin") != "https://cache.example" ||
+		!strings.Contains(publicResponse.Header.Get("Access-Control-Expose-Headers"), "Content-Disposition") {
+		t.Fatalf("public image returned unexpected CORS headers: %#v", publicResponse.Header)
+	}
+	publicResponse.Body.Close()
+	randomResponse := request(redirectClient, http.MethodGet, "/random", "https://cache.example", "", http.StatusFound)
+	if randomResponse.Header.Get("Access-Control-Allow-Origin") != "https://cache.example" ||
+		!strings.Contains(randomResponse.Header.Get("Access-Control-Expose-Headers"), "Location") {
+		t.Fatalf("random redirect returned unexpected CORS headers: %#v", randomResponse.Header)
+	}
+	randomResponse.Body.Close()
+
+	privateResponse := request(adminClient, http.MethodGet, privateImage.URL, "https://cache.example", "", http.StatusOK)
+	if privateResponse.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("private image exposed CORS headers: %#v", privateResponse.Header)
+	}
+	privateResponse.Body.Close()
+
+	randomPreflight := request(redirectClient, http.MethodOptions, "/random", "https://cache.example", http.MethodGet, http.StatusNoContent)
+	if randomPreflight.Header.Get("Access-Control-Allow-Origin") != "https://cache.example" ||
+		!strings.Contains(randomPreflight.Header.Get("Access-Control-Allow-Methods"), http.MethodGet) ||
+		!strings.Contains(randomPreflight.Header.Get("Access-Control-Allow-Headers"), "Cache-Control") ||
+		randomPreflight.Header.Get("Access-Control-Max-Age") != "600" {
+		t.Fatalf("random preflight returned unexpected CORS headers: %#v", randomPreflight.Header)
+	}
+	randomPreflight.Body.Close()
+	imagePreflight := request(redirectClient, http.MethodOptions, publicImage.URL, "https://cache.example", http.MethodHead, http.StatusNoContent)
+	if imagePreflight.Header.Get("Access-Control-Allow-Origin") != "https://cache.example" {
+		t.Fatalf("public image preflight returned unexpected CORS headers: %#v", imagePreflight.Header)
+	}
+	imagePreflight.Body.Close()
+	privatePreflight := request(redirectClient, http.MethodOptions, privateImage.URL, "https://cache.example", http.MethodGet, http.StatusNotFound)
+	if privatePreflight.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("private image preflight exposed CORS headers: %#v", privatePreflight.Header)
+	}
+	privatePreflight.Body.Close()
+	invalidMethod := request(redirectClient, http.MethodOptions, "/random", "https://cache.example", http.MethodPost, http.StatusMethodNotAllowed)
+	invalidMethod.Body.Close()
+
+	settings.Security.CORSAllowedOrigin = "*"
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/settings", settings, http.StatusOK, &settings)
+	wildcardResponse := request(redirectClient, http.MethodGet, publicImage.URL, "https://another.example", "", http.StatusOK)
+	if wildcardResponse.Header.Get("Access-Control-Allow-Origin") != "*" || wildcardResponse.Header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("wildcard CORS returned unexpected headers: %#v", wildcardResponse.Header)
+	}
+	wildcardResponse.Body.Close()
+
+	settings.Security.CORSAllowedOrigin = "https://cache.example/path"
+	doJSON(t, adminClient, http.MethodPut, server.URL+"/api/settings", settings, http.StatusBadRequest, nil)
 }
 
 func setupPayload() map[string]string {

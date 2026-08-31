@@ -91,7 +91,7 @@ onMounted(loadSettings)
         </button>
         <button type="button" :class="{ active: activeTab === 'security' }" @click="activeTab = 'security'">
           <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.9 8.2 7 10 4.1-1.8 7-5.3 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
-          <span><strong>安全</strong><small>登录保护与代理</small></span>
+          <span><strong>安全</strong><small>登录、跨域与代理</small></span>
         </button>
         <button type="button" :class="{ active: activeTab === 'api' }" @click="activeTab = 'api'">
           <svg viewBox="0 0 24 24"><path d="M8 9 5 12l3 3m8-6 3 3-3 3M14 5l-4 14"/></svg>
@@ -147,7 +147,7 @@ onMounted(loadSettings)
           <template v-else-if="activeTab === 'security'">
             <header class="settings-panel-heading">
               <span class="settings-icon"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.9 8.2 7 10 4.1-1.8 7-5.3 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg></span>
-              <div><h2>安全设置</h2><p>保护登录入口，并在可信代理后恢复真实来源 IP。</p></div>
+              <div><h2>安全设置</h2><p>保护登录入口，控制公开图片跨域访问，并在可信代理后恢复真实来源 IP。</p></div>
             </header>
 
             <div class="settings-card">
@@ -157,6 +157,21 @@ onMounted(loadSettings)
               </div>
               <div v-if="form.security.limitLoginFailures" class="dependent-settings narrow-setting">
                 <label class="field"><span>最大登录失败次数</span><div class="unit-input"><input v-model.number="form.security.maxLoginFailures" type="number" min="1" max="100" required /><span>次</span></div><small>达到上限后，该 IP 将被临时限制 15 分钟</small></label>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-title">
+                <div><h3>公开图片 CORS</h3><p>允许其他网站通过 JavaScript 请求并缓存公开图片。</p></div>
+                <label class="toggle-control"><input v-model="form.security.enablePublicCORS" type="checkbox" /><span aria-hidden="true"></span><em>{{ form.security.enablePublicCORS ? '已开启' : '已关闭' }}</em></label>
+              </div>
+              <div v-if="form.security.enablePublicCORS" class="dependent-settings narrow-setting">
+                <label class="field">
+                  <span>允许来源</span>
+                  <input v-model.trim="form.security.corsAllowedOrigin" type="text" placeholder="*" required />
+                  <small>填写 <code>*</code> 允许任意来源，或填写一个完整来源，例如 <code>https://cache.example.com</code>；不要包含路径。</small>
+                </label>
+                <div class="security-warning"><strong>只开放公开图片资源</strong><span>该设置仅作用于 <code>/random</code> 和公开的 <code>/i/...</code>，不会发送 Cookie、开放管理 API 或暴露私密图片。</span></div>
               </div>
             </div>
 

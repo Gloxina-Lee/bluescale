@@ -6,8 +6,8 @@ const endpoints = [
   { method: 'POST', path: '/api/logout', auth: '必须', description: '注销当前 Cookie 会话。' },
   { method: 'GET', path: '/api/me', auth: '必须', description: '读取当前管理员资料。' },
   { method: 'PUT', path: '/api/me', auth: '必须', description: '更新管理员用户名或密码。' },
-  { method: 'GET', path: '/api/settings', auth: '必须', description: '读取上传与安全设置。' },
-  { method: 'PUT', path: '/api/settings', auth: '必须', description: '更新上传与安全设置。' },
+  { method: 'GET', path: '/api/settings', auth: '必须', description: '读取上传、安全与 API 设置。' },
+  { method: 'PUT', path: '/api/settings', auth: '必须', description: '更新上传、安全与 API 设置。' },
   { method: 'GET', path: '/api/albums', auth: '可选', description: '列出相册；匿名请求的图片数量只统计公开图片。' },
   { method: 'POST', path: '/api/albums', auth: '必须', description: '创建相册。' },
   { method: 'DELETE', path: '/api/albums', auth: '必须', description: '批量删除相册，不删除图片文件。' },
@@ -22,7 +22,7 @@ const endpoints = [
   { method: 'POST', path: '/api/tokens', auth: '必须', description: '生成 API Token；完整 Token 仅在此次响应中返回。' },
   { method: 'DELETE', path: '/api/tokens', auth: '必须', description: '批量删除并立即撤销 API Token。' },
   { method: 'GET', path: '/api/tokens/{id}', auth: '必须', description: '读取 Token 的创建时间与最后使用时间。' },
-  { method: 'GET', path: '/random', auth: '无需', description: '从全部公开图片或指定相册范围内随机返回一张图片。' },
+  { method: 'GET', path: '/random', auth: '无需', description: '随机选择一张公开图片，并以 302 重定向到原图地址。' },
   { method: 'GET', path: '/i/{name}', auth: '可选', description: '读取图片原文件；私密图片需要鉴权，匿名请求返回 404。' },
 ]
 
@@ -72,10 +72,15 @@ const requestBodies = [
 
     <section class="docs-card">
       <header><div><span class="eyebrow">RANDOM IMAGE</span><h2>随机图片</h2></div></header>
-      <p class="docs-copy"><code>GET /random</code> 直接返回一张公开图片。使用英文逗号分隔多个相册名称；相册名称本身不能包含英文逗号。</p>
+      <p class="docs-copy"><code>GET /random</code> 返回 <code>302 Found</code>，<code>Location</code> 指向随机选中的公开原图；客户端应允许跟随重定向。重定向本身不缓存，公开原图可由共享 CDN 缓存一天。使用英文逗号分隔多个相册名称；相册名称本身不能包含英文逗号。</p>
       <div class="docs-parameter-grid"><div><code>albums</code><span>可选，相册名称列表，例如 旅行,收藏</span></div><div><code>mode</code><span>可选，union 表示并集，intersection 表示交集；省略时读取系统设置</span></div></div>
       <p class="docs-example"><code>GET /random?albums=album_a,album_b</code></p>
       <p class="docs-example"><code>GET /random?albums=album_c,album_d&amp;mode=intersection</code></p>
+    </section>
+
+    <section class="docs-card">
+      <header><div><span class="eyebrow">PUBLIC IMAGE CORS</span><h2>公开图片跨域访问</h2></div></header>
+      <p class="docs-copy">在“系统设置 → 安全 → 公开图片 CORS”中开启后，<code>/random</code> 和公开的 <code>/i/{name}</code> 会返回 CORS 响应头，并支持 GET、HEAD 的 OPTIONS 预检。允许来源可以设置为 <code>*</code> 或一个完整的 HTTP/HTTPS 来源；私密图片和管理 API 不受影响，也不会发送跨域凭据。</p>
     </section>
 
     <section class="docs-card">
@@ -97,7 +102,7 @@ const requestBodies = [
 
     <section class="docs-card docs-status-card">
       <header><div><span class="eyebrow">RESPONSES</span><h2>状态码</h2></div></header>
-      <div class="docs-status-grid"><div><strong>200 / 201 / 204</strong><span>请求成功、资源已创建或无响应体</span></div><div><strong>400</strong><span>参数或请求体无效</span></div><div><strong>401</strong><span>缺少或使用无效凭据</span></div><div><strong>404</strong><span>资源不存在；私密图片对匿名请求也返回 404</span></div><div><strong>409</strong><span>重复资源或当前状态冲突</span></div><div><strong>429</strong><span>登录失败次数超过限制</span></div></div>
+      <div class="docs-status-grid"><div><strong>200 / 201 / 204</strong><span>请求成功、资源已创建或无响应体</span></div><div><strong>302</strong><span>随机图片已选择，并临时重定向到原图地址</span></div><div><strong>400</strong><span>参数或请求体无效</span></div><div><strong>401</strong><span>缺少或使用无效凭据</span></div><div><strong>404</strong><span>资源不存在；私密图片对匿名请求也返回 404</span></div><div><strong>409</strong><span>重复资源或当前状态冲突</span></div><div><strong>429</strong><span>登录失败次数超过限制</span></div></div>
     </section>
   </section>
 </template>
